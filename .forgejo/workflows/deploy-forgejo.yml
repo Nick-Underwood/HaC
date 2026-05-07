@@ -1,0 +1,72 @@
+name: Deploy Forgejo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Management/Git - Forgejo/git.yml"
+      - ".forgejo/workflows/deploy-forgejo.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Management/Git - Forgejo/git.yml"
+
+      - name: Deploy Forgejo
+        working-directory: "./Docker-Critical/Management/Git - Forgejo"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          GIT_DB_PASSWORD: ${{ secrets.GIT_DB_PASSWORD }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+        run: |
+          # Validate required vars
+          for var in DOMAIN_NAME CERTRESOLVER GIT_DB_PASSWORD POSTGRES_USER POSTGRES_DB; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Extract defined image from compose file
+          defined_image=$(grep -m1 'image:.*forgejo' git.yml | awk '{print $2}')
+
+          # Get currently running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' forgejo 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum git.yml | awk '{print $1}')
+          old=$(cat ~/.hac-critical/.git_checksum 2>/dev/null || echo "")
+
+          # Decide whether to redeploy
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Forgejo on docker-critical..."
+            mkdir -p ~/.hac-critical
+
+            # Force-remove by name first (handles containers without compose labels)
+            docker rm -f forgejo git-db || true
+
+            # Stop and remove stack cleanly
+            docker compose -p git -f git.yml down --remove-orphans || true
+
+            # Deploy stack
+            docker compose -p git -f git.yml up -d --force-recreate
+
+            # Save checksum for next comparison
+            echo "$checksum" > ~/.hac-critical/.git_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

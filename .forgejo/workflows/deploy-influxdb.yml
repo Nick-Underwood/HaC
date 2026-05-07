@@ -1,0 +1,47 @@
+name: Deploy InfluxDB
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Tools/InfluxDB/**"
+      - ".forgejo/workflows/deploy-influxdb.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l ./Docker-Critical/Tools/InfluxDB/influxdb.yml
+
+      - name: Compare image and config
+        working-directory: ./Docker-Critical/Tools/InfluxDB
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          TZ: ${{ vars.TZ }}
+          INFLUXDB_ADMIN_PASSWORD: ${{ secrets.INFLUXDB_ADMIN_PASSWORD }}
+        run: |
+          # Check if image or config changed; redeploy if needed
+          defined_image=$(grep -m1 'image:' influxdb.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' influxdb 2>/dev/null || echo "none")
+          checksum=$(sha256sum influxdb.yml | awk '{print $1}')
+          old=$(cat .influxdb_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying InfluxDB..."
+            docker compose -p influxdb -f influxdb.yml down --remove-orphans || true
+            DOMAIN_NAME="$DOMAIN_NAME" TZ="$TZ" INFLUXDB_ADMIN_PASSWORD="$INFLUXDB_ADMIN_PASSWORD" docker compose -p influxdb -f influxdb.yml up -d --force-recreate
+            echo "$checksum" > .influxdb_checksum
+            docker logs influxdb --tail 20
+          else
+            echo "No changes detected, skipping redeploy"
+          fi

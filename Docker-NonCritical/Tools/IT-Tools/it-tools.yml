@@ -1,0 +1,36 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  it-tools:
+    image: ghcr.io/corentinth/it-tools:latest
+    container_name: it-tools
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/IT-Tools/it-tools.yml
+      - ha.service-name=it-tools
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.ittools.entrypoints=websecure
+      - traefik.http.routers.ittools.rule=Host(`it-tools.${DOMAIN_NAME}`)
+      - traefik.http.routers.ittools.service=ittools
+      - traefik.http.services.ittools.loadbalancer.server.port=80
+      - traefik.http.routers.ittools.tls.certresolver=${CERTRESOLVER}
+
+    networks:
+      - toolsproxy

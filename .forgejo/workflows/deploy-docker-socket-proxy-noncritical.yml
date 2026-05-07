@@ -1,0 +1,29 @@
+name: Deploy Docker Socket Proxy - NonCritical
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/DockerSocketProxy/**"
+      - ".forgejo/workflows/deploy-docker-socket-proxy-noncritical.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Docker Socket Proxy
+        working-directory: "./Docker-NonCritical/Tools/DockerSocketProxy"
+        env:
+          TZ: ${{ vars.TZ }}
+        run: |
+          docker compose -p docker-socket-proxy-noncritical -f docker-socket-proxy.yml up -d --force-recreate

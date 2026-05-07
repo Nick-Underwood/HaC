@@ -1,0 +1,86 @@
+name: Deploy Torrent Services
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Networking/Torrent/**"
+      - ".forgejo/workflows/deploy-torrent.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Networking/Torrent/torrent.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Networking/Torrent"
+        env:
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          VPN_SERVICE_PROVIDER: ${{ vars.VPN_SERVICE_PROVIDER }}
+          VPN_SERVER_COUNTRIES: ${{ vars.VPN_SERVER_COUNTRIES }}
+          LAN_SUBNET: ${{ vars.LAN_SUBNET }}
+          OPENVPN_USER: ${{ secrets.OPENVPN_USER }}
+          OPENVPN_PASSWORD: ${{ secrets.OPENVPN_PASSWORD }}
+        run: |
+          if [ -z "$LAN_SUBNET" ]; then
+            echo "LAN_SUBNET is not set. Define it in Forgejo variables (e.g., 192.168.1.0/24)."
+            exit 1
+          fi
+          # Extract defined images
+          defined_gluetun=$(grep -m1 'image:.*gluetun' torrent.yml | awk '{print $2}')
+          defined_qbittorrent=$(grep -m1 'image:.*qbittorrent' torrent.yml | awk '{print $2}')
+          defined_nzbget=$(grep -m1 'image:.*nzbget' torrent.yml | awk '{print $2}')
+
+          # Extract running images
+          running_gluetun=$(docker inspect -f '{{.Config.Image}}' gluetun 2>/dev/null || echo "none")
+          running_qbittorrent=$(docker inspect -f '{{.Config.Image}}' qbittorrent 2>/dev/null || echo "none")
+          running_nzbget=$(docker inspect -f '{{.Config.Image}}' nzbget 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum torrent.yml | awk '{print $1}')
+          old=$(cat .torrent_checksum 2>/dev/null || echo "")
+
+          echo "Defined gluetun: $defined_gluetun"
+          echo "Running gluetun: $running_gluetun"
+          echo "Defined qbittorrent: $defined_qbittorrent"
+          echo "Running qbittorrent: $running_qbittorrent"
+          echo "Defined nzbget: $defined_nzbget"
+          echo "Running nzbget: $running_nzbget"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_gluetun" != "$running_gluetun" ] || \
+             [ "$defined_qbittorrent" != "$running_qbittorrent" ] || \
+             [ "$defined_nzbget" != "$running_nzbget" ] || \
+             [ "$checksum" != "$old" ]; then
+            echo "Redeploying Torrent Services"
+
+            # Deploy
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              VPN_SERVICE_PROVIDER=$VPN_SERVICE_PROVIDER VPN_SERVER_COUNTRIES=$VPN_SERVER_COUNTRIES \
+              LAN_SUBNET=$LAN_SUBNET OPENVPN_USER=$OPENVPN_USER OPENVPN_PASSWORD=$OPENVPN_PASSWORD \
+              docker compose -p torrent -f torrent.yml down --remove-orphans || true
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              VPN_SERVICE_PROVIDER=$VPN_SERVICE_PROVIDER VPN_SERVER_COUNTRIES=$VPN_SERVER_COUNTRIES \
+              LAN_SUBNET=$LAN_SUBNET OPENVPN_USER=$OPENVPN_USER OPENVPN_PASSWORD=$OPENVPN_PASSWORD \
+              docker compose -p torrent -f torrent.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .torrent_checksum
+          else
+            echo "No redeploy needed"
+          fi

@@ -1,0 +1,99 @@
+name: Deploy NetBox
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/NetBox/**"
+      - ".forgejo/workflows/deploy-netbox.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l ./Docker-Critical/Home/NetBox/netbox.yml
+
+      - name: Copy theme files to host
+        run: |
+          sudo mkdir -p /srv/netbox/theme
+          sudo cp "./Docker-Critical/Home/NetBox/netbox.yml" /srv/netbox/
+          sudo cp "./Docker-Critical/Home/NetBox/docker-compose.override.yml" /srv/netbox/
+          sudo cp "./Docker-Critical/Home/NetBox/Dockerfile-Plugins" /srv/netbox/
+          sudo cp "./Docker-Critical/Home/NetBox/theme"/*.py /srv/netbox/theme/ || true
+          sudo cp "./Docker-Critical/Home/NetBox/theme"/*.txt /srv/netbox/theme/ || true
+          sudo cp "./Docker-Critical/Home/NetBox/theme"/*.sh /srv/netbox/theme/ || true
+          sudo cp "./Docker-Critical/Home/NetBox/theme"/*.css /srv/netbox/theme/ || true
+          echo "All files copied to /srv/netbox/"
+
+      - name: Deploy NetBox
+        working-directory: "./Docker-Critical/Home/NetBox"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          NETBOX_ALLOWED_HOSTS: ${{ vars.NETBOX_ALLOWED_HOSTS }}
+          NETBOX_DB_NAME: ${{ vars.NETBOX_DB_NAME }}
+          NETBOX_DB_USER: ${{ vars.NETBOX_DB_USER }}
+          NETBOX_DB_PASSWORD: ${{ secrets.NETBOX_DB_PASSWORD }}
+          NETBOX_DB_HOST: ${{ vars.NETBOX_DB_HOST }}
+          NETBOX_REDIS_HOST: ${{ vars.NETBOX_REDIS_HOST }}
+          NETBOX_SECRET_KEY: ${{ secrets.NETBOX_SECRET_KEY }}
+          NETBOX_API_TOKEN_PEPPERS: ${{ secrets.NETBOX_API_TOKEN_PEPPERS }}
+          NETBOX_EMAIL_FROM: ${{ vars.NETBOX_EMAIL_FROM }}
+          NETBOX_EMAIL_SERVER: ${{ vars.NETBOX_EMAIL_SERVER }}
+          NETBOX_EMAIL_PORT: ${{ vars.NETBOX_EMAIL_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          NETBOX_METRICS_ENABLED: ${{ vars.NETBOX_METRICS_ENABLED }}
+          TRUENAS_URL: ${{ vars.TRUENAS_URL }}
+          TRUENAS_API_KEY: ${{ secrets.TRUENAS_API_KEY }}
+          OPNSENSE_URL: ${{ vars.OPNSENSE_URL }}
+          OPNSENSE_API_KEY: ${{ secrets.OPNSENSE_API_KEY }}
+          OPNSENSE_API_SECRET: ${{ secrets.OPNSENSE_API_SECRET }}
+          OMADA_URL: ${{ vars.OMADA_URL }}
+          OMADA_USERNAME: ${{ secrets.OMADA_USERNAME }}
+          OMADA_PASSWORD: ${{ secrets.OMADA_PASSWORD }}
+          OMADA_SITE_NAME: ${{ vars.OMADA_SITE_NAME }}
+          NETBOX_API_TOKEN: ${{ secrets.NETBOX_API_TOKEN }}
+          VERIFY_SSL: ${{ vars.VERIFY_SSL }}
+        run: |
+          # Validate required vars
+          for var in DOMAIN_NAME NETBOX_ALLOWED_HOSTS NETBOX_DB_NAME NETBOX_DB_USER NETBOX_DB_PASSWORD NETBOX_DB_HOST NETBOX_REDIS_HOST NETBOX_SECRET_KEY NETBOX_API_TOKEN_PEPPERS NETBOX_EMAIL_FROM NETBOX_EMAIL_SERVER NETBOX_EMAIL_PORT SMTP_USERNAME SMTP_PASSWORD NETBOX_METRICS_ENABLED; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' netbox.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' netbox 2>/dev/null || echo "none")
+          checksum=$(sha256sum netbox.yml | awk '{print $1}')
+          old=$(sudo cat /srv/netbox/.netbox_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying NetBox..."
+            # Stop and remove existing containers
+            docker stop netbox 2>/dev/null || true
+            docker rm netbox 2>/dev/null || true
+            docker stop netbox-postgres 2>/dev/null || true
+            docker rm netbox-postgres 2>/dev/null || true
+            docker stop netbox-redis 2>/dev/null || true
+            docker rm netbox-redis 2>/dev/null || true
+            
+            cd /srv/netbox
+            # Clean up with docker compose
+            docker compose -p netbox down --remove-orphans || true
+            docker compose -p netbox build --no-cache || true
+            docker compose -p netbox -f netbox.yml up -d --force-recreate
+            sudo sh -c "echo '$checksum' > /srv/netbox/.netbox_checksum"
+          fi

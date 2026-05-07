@@ -1,0 +1,139 @@
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - 8888:8888/tcp # HTTP proxy
+      - 8388:8388/tcp # Shadowsocks
+      - 8388:8388/udp # Shadowsocks
+      - 8090:8090/tcp # port for qbittorrent
+      - 8081:8081/tcp # qbittorrent webui
+      - 6789:6789/tcp # nzbget webui
+    volumes:
+      - /srv/gluetun/config:/gluetun
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=openvpn
+      - OPENVPN_USER=${OPENVPN_USER}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
+      - SERVER_COUNTRIES=${VPN_SERVER_COUNTRIES}
+      - HTTPPROXY=on
+      - HTTPPROXY_LOG=off
+      - SHADOWSOCKS=off
+      - FIREWALL_OUTBOUND_SUBNETS=172.20.0.0/16,${LAN_SUBNET}
+      #      - FIREWALL_VPN_INPUT_PORTS=12345 #uncomment or remove this line based on the notes below
+      - UPDATER_PERIOD=24h
+      - BLOCK_ADS=on
+      - BLOCK_MALICIOUS=on
+      - BLOCK_SURVEILLANCE=on
+      - DNS_UPDATE_PERIOD=24h
+      - DNS_UPSTREAM_RESOLVERS=cloudflare
+      - DNS_SERVER=on
+      - FREE_ONLY=off
+    networks:
+      - torrentproxy
+      - mediaproxy
+      - toolsproxy
+    labels:
+      # Traefik
+      - traefik.enable=true
+      - traefik.docker.network=torrentproxy
+      # Gluetun Built-in HTTP control server (API Endpoint)
+      - traefik.http.routers.gluetun.entrypoints=websecure
+      - traefik.http.routers.gluetun.rule=Host(`gluetun.${DOMAIN_NAME}`)
+      - traefik.http.routers.gluetun.service=gluetun
+      - traefik.http.services.gluetun.loadbalancer.server.port=8000
+      - traefik.http.routers.gluetun.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.gluetun.tls.domains[0].main=gluetun.${DOMAIN_NAME}
+      # qBittorrent (routed through gluetun network stack)
+      - traefik.http.routers.qbit.entrypoints=websecure
+      - traefik.http.routers.qbit.rule=Host(`qbit.${DOMAIN_NAME}`)
+      - traefik.http.routers.qbit.service=qbit
+      - traefik.http.services.qbit.loadbalancer.server.port=8081
+      - traefik.http.routers.qbit.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.qbit.tls.domains[0].main=qbit.${DOMAIN_NAME}
+      # NZBGet (routed through gluetun network stack)
+      - traefik.http.routers.nzbget.entrypoints=websecure
+      - traefik.http.routers.nzbget.rule=Host(`nzbget.${DOMAIN_NAME}`)
+      - traefik.http.routers.nzbget.service=nzbget
+      - traefik.http.services.nzbget.loadbalancer.server.port=6789
+      - traefik.http.routers.nzbget.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.nzbget.tls.domains[0].main=nzbget.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-NonCritical/Networking/Torrent/torrent.yml"
+      - "ha.service-name=gluetun"
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - WEBUI_PORT=8081
+      - UMASK=022
+    volumes:
+      - /srv/qbittorrent/config:/config
+      - /mnt/data/torrents:/data/torrents
+    network_mode: "container:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+        restart: true
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-NonCritical/Networking/Torrent/torrent.yml"
+      - "ha.service-name=qbittorrent"
+
+  nzbget:
+    image: linuxserver/nzbget:latest
+    container_name: nzbget
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    volumes:
+      - /srv/nzbget/config:/config
+      - /mnt/data/usenet:/data/usenet
+    network_mode: "container:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+        restart: true
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-NonCritical/Networking/Torrent/torrent.yml"
+      - "ha.service-name=nzbget"
+
+networks:
+  torrentproxy:
+    external: true
+  mediaproxy:
+    external: true
+  toolsproxy:
+    external: true

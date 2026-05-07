@@ -1,0 +1,64 @@
+networks:
+  toolsproxy:
+    external: true
+
+volumes:
+  userbrowser_db:
+    driver: local
+
+services:
+  userbrowser:
+    image: git.${DOMAIN_NAME}/nicholas/userbrowser:latest
+    container_name: userbrowser
+    restart: unless-stopped
+
+    # Explicit DNS bypasses OPNsense Unbound blocklists so OSINT targets
+    # resolve correctly from inside the container.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    environment:
+      - SEARX_URL=${SEARX_INTERNAL_URL}
+      - SEARX_DIRECT_URL=${SEARX_DIRECT_INTERNAL_URL}
+      - PROWLARR_URL=${PROWLARR_URL}
+      - PROWLARR_KEY=${PROWLARR_KEY}
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-}
+      - DB_PATH=/app/db/userbrowser.db
+
+    volumes:
+      - userbrowser_db:/app/db
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/UserBrowser/userbrowser.yml
+      - ha.service-name=userbrowser
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.userbrowser.entrypoints=websecure
+      - traefik.http.routers.userbrowser.rule=Host(`userbrowser.${DOMAIN_NAME}`)
+      - traefik.http.routers.userbrowser.service=userbrowser
+      - traefik.http.services.userbrowser.loadbalancer.server.port=8000
+      - traefik.http.routers.userbrowser.tls.certresolver=${CERTRESOLVER}
+      # Auth — Authentik forward auth (internal tool, keep behind SSO)
+      - traefik.http.routers.userbrowser.middlewares=authentik@docker
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    networks:
+      - toolsproxy

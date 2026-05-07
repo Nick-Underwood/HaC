@@ -1,0 +1,48 @@
+name: Mirror to GitHub
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build sanitized mirror tree
+        run: |
+          set -eu
+          rm -rf /tmp/hac-github-mirror
+          mkdir -p /tmp/hac-github-mirror
+          cp -a . /tmp/hac-github-mirror/
+          cd /tmp/hac-github-mirror
+
+          # Remove private/editor metadata from the public mirror.
+          rm -rf .git
+          rm -rf .vscode
+          rm -f .github/copilot-instructions.md
+          rm -rf .github/agents .github/prompts .github/instructions
+          find . -type f \( -name '*.instructions.md' -o -name '*.agent.md' -o -name '*.prompt.md' -o -name 'AGENTS.md' -o -name 'SKILL.md' -o -name 'copilot-instructions.md' -o -name '*.code-workspace' \) -delete
+
+      - name: Push sanitized tree to GitHub
+        run: |
+          set -eu
+          cd /tmp/hac-github-mirror
+          git init
+          git config user.name "forgejo-mirror-bot"
+          git config user.email "mirror@u-acres.com"
+          git add -A
+          git commit -m "Mirror sanitized snapshot from Forgejo"
+          git branch -M main
+          git remote add github https://x-access-token:${{ secrets.TOKEN_GITHUB }}@github.com/Nick-Underwood/HaC.git
+          git push github main --force

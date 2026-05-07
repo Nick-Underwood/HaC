@@ -1,0 +1,62 @@
+name: Deploy Flaresolverr
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Media/flaresolverr/**"
+      - ".forgejo/workflows/deploy-flaresolverr.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Media/flaresolverr/flaresolverr.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Media/flaresolverr"
+        env:
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' flaresolverr.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' flaresolverr 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum flaresolverr.yml | awk '{print $1}')
+          old=$(cat .flaresolverr_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Flaresolverr"
+
+            # Deploy
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p flaresolverr -f flaresolverr.yml down --remove-orphans || true
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p flaresolverr -f flaresolverr.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .flaresolverr_checksum
+          else
+            echo "No redeploy needed"
+          fi

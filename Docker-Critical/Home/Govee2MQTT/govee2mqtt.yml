@@ -1,0 +1,26 @@
+services:
+  govee2mqtt:
+    image: ghcr.io/wez/govee2mqtt:latest
+    container_name: govee2mqtt
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GOVEE_EMAIL=${GOVEE_EMAIL}
+      - GOVEE_PASSWORD=${GOVEE_PASSWORD}
+      - GOVEE_API_KEY=${GOVEE_API_KEY}
+      - GOVEE_MQTT_HOST=localhost
+      - GOVEE_MQTT_PORT=1883
+      - GOVEE_MQTT_USER=${GOVEE_MQTT_USER:-}
+      - GOVEE_MQTT_PASSWORD=${GOVEE_MQTT_PASSWORD:-}
+      - GOVEE_TEMPERATURE_SCALE=${GOVEE_TEMPERATURE_SCALE:-C}
+      - RUST_LOG_STYLE=always
+      - RUST_LOG=${RUST_LOG:-govee=info}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=home"
+      - "ha.compose-file=Docker-Critical/Home/Govee2MQTT/govee2mqtt.yml"
+      - "ha.service-name=govee2mqtt"
+    volumes:
+      - /srv/govee2mqtt/data:/data
+#

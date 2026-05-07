@@ -1,0 +1,164 @@
+name: Apply Updates - Docker NonCritical
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: 'Containers to update (comma-separated, or "all" for all with updates)'
+        required: false
+        default: 'all'
+
+jobs:
+  apply-updates:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Pull and recreate containers
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          PLEX_CLAIM: ${{ secrets.PLEX_CLAIM }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          # Map containers to their compose files and service names
+          # Note: paths are case-sensitive on Linux!
+          declare -A COMPOSE_MAP
+          declare -A SERVICE_MAP
+          COMPOSE_MAP["plex"]="Docker-NonCritical/Media/Plex/plex.yml"
+          SERVICE_MAP["plex"]="plex"
+          COMPOSE_MAP["sonarr"]="Docker-NonCritical/Media/Sonarr/sonarr.yml"
+          SERVICE_MAP["sonarr"]="sonarr"
+          COMPOSE_MAP["radarr"]="Docker-NonCritical/Media/radarr/radarr.yml"
+          SERVICE_MAP["radarr"]="radarr"
+          COMPOSE_MAP["lidarr"]="Docker-NonCritical/Media/lidarr/lidarr.yml"
+          SERVICE_MAP["lidarr"]="lidarr"
+          COMPOSE_MAP["readarr"]="Docker-NonCritical/Media/readarr/readarr.yml"
+          SERVICE_MAP["readarr"]="readarr"
+          COMPOSE_MAP["prowlarr"]="Docker-NonCritical/Media/prowlarr/prowlarr.yml"
+          SERVICE_MAP["prowlarr"]="prowlarr"
+          COMPOSE_MAP["overseerr"]="Docker-NonCritical/Media/overseerr/overseerr.yml"
+          SERVICE_MAP["overseerr"]="overseerr"
+          COMPOSE_MAP["qbittorrent"]="Docker-NonCritical/Networking/Torrent/torrent.yml"
+          SERVICE_MAP["qbittorrent"]="qbittorrent"
+          COMPOSE_MAP["sabnzbd"]="Docker-NonCritical/Networking/Torrent/torrent.yml"
+          SERVICE_MAP["sabnzbd"]="sabnzbd"
+          COMPOSE_MAP["traefik"]="Docker-NonCritical/Networking/Proxy/proxy.yml"
+          SERVICE_MAP["traefik"]="traefik"
+          COMPOSE_MAP["flaresolverr"]="Docker-NonCritical/Media/flaresolverr/flaresolverr.yml"
+          SERVICE_MAP["flaresolverr"]="flaresolverr"
+          COMPOSE_MAP["speedtest"]="Docker-NonCritical/Tools/Speedtest/speedtest.yml"
+          SERVICE_MAP["speedtest"]="speedtest"
+
+          updated=""
+          containers_to_update=""
+
+          if [ "$CONTAINERS" = "all" ]; then
+            # Check all and update those with available updates
+            chmod +x ./scripts/check-docker-updates.sh
+            for container in "${!COMPOSE_MAP[@]}"; do
+              if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                echo "Checking $container..."
+                result=$(./scripts/check-docker-updates.sh "$container" 2>/dev/null)
+                # Script outputs JSON object starting with { if update available
+                if [ -n "$result" ] && [[ "$result" == "{"* ]]; then
+                  echo "  -> Update available"
+                  if [ -z "$containers_to_update" ]; then
+                    containers_to_update="$container"
+                  else
+                    containers_to_update="${containers_to_update},${container}"
+                  fi
+                else
+                  echo "  -> No update"
+                fi
+              fi
+            done
+            CONTAINERS="$containers_to_update"
+          fi
+
+          if [ -z "$CONTAINERS" ]; then
+            echo "No containers need updating"
+            exit 0
+          fi
+
+          echo "Containers to update: $CONTAINERS"
+
+          # Update each container
+          IFS=',' read -ra CONTAINER_LIST <<< "$CONTAINERS"
+          for container in "${CONTAINER_LIST[@]}"; do
+            container=$(echo "$container" | xargs)  # trim whitespace
+            compose_file="${COMPOSE_MAP[$container]}"
+            service_name="${SERVICE_MAP[$container]}"
+
+            if [ -n "$compose_file" ] && [ -f "$compose_file" ]; then
+              echo "Updating $container (service: $service_name) using $compose_file"
+
+              # Pull new image
+              image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+              if [ -n "$image" ]; then
+                docker pull "$image"
+              fi
+
+              # Stop and remove old container to avoid name conflicts
+              docker stop "$container" 2>/dev/null || true
+              docker rm "$container" 2>/dev/null || true
+
+              # Recreate container using service name
+              cd "$(dirname "$compose_file")"
+              docker compose -f "$(basename "$compose_file")" up -d "$service_name" || true
+              cd - > /dev/null
+
+              updated="${updated}${container}, "
+            else
+              echo "Warning: No compose file mapped for $container"
+            fi
+          done
+
+          echo "Updated containers: ${updated%, }"
+
+      - name: Wait for services to stabilize
+        run: sleep 15
+
+      - name: Notify Home Assistant of completion
+        continue-on-error: true
+        env:
+          HA_URL: ${{ vars.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_LONG_LIVED_TOKEN }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+          UPDATED: ${{ env.updated }}
+        run: |
+          # Use the actually updated containers if available, otherwise the input
+          containers_list="${UPDATED:-${CONTAINERS}}"
+
+          # Build payload with jq for proper JSON
+          payload=$(jq -n \
+            --arg host "docker-noncritical" \
+            --arg containers "$containers_list" \
+            '{host: $host, containers: $containers}')
+
+          echo "Sending payload: $payload"
+
+          # Retry up to 3 times with 10 second delay
+          for i in 1 2 3; do
+            if curl -s --fail --max-time 30 -X POST \
+              -H "Authorization: Bearer ${HA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$payload" \
+              "${HA_URL}/api/events/docker_updates_applied"; then
+              echo "Successfully notified Home Assistant"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Failed to notify Home Assistant after 3 attempts"

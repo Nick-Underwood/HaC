@@ -1,0 +1,86 @@
+command_line:
+  - sensor:
+      name: Vikunja Today Tasks Raw
+      unique_id: vikunja_today_tasks_raw
+      command: >-
+        bash /config/scripts/vikunja_api.sh today
+        {{ states('input_text.vikunja_url') }}
+        {{ states('input_text.vikunja_api_token') }}
+      scan_interval: 300
+      value_template: "{{ value | from_json | length | default(0) }}"
+      json_attributes:
+        - tasks
+      command_timeout: 30
+
+  - sensor:
+      name: Vikunja Overdue Tasks Raw
+      unique_id: vikunja_overdue_tasks_raw
+      command: >-
+        bash /config/scripts/vikunja_api.sh overdue
+        {{ states('input_text.vikunja_url') }}
+        {{ states('input_text.vikunja_api_token') }}
+      scan_interval: 300
+      value_template: "{{ value | from_json | length | default(0) }}"
+      json_attributes:
+        - tasks
+      command_timeout: 30
+
+  - sensor:
+      name: Vikunja Completed Today Raw
+      unique_id: vikunja_completed_today_raw
+      command: >-
+        bash /config/scripts/vikunja_api.sh completed_today
+        {{ states('input_text.vikunja_url') }}
+        {{ states('input_text.vikunja_api_token') }}
+      scan_interval: 300
+      value_template: "{{ value | from_json | length | default(0) }}"
+      json_attributes:
+        - tasks
+      command_timeout: 30
+
+input_text:
+  vikunja_url:
+    name: Vikunja URL
+    initial: !secret vikunja_url
+    mode: text
+  vikunja_api_token:
+    name: Vikunja API Token
+    initial: !secret vikunja_api_token
+    mode: password
+
+template:
+  - sensor:
+      - name: Vikunja Today Count
+        unique_id: vikunja_today_count
+        icon: mdi:checkbox-marked-circle-outline
+        state: >-
+          {{ states('sensor.vikunja_today_tasks_raw') | int(0) }}
+        unit_of_measurement: tasks
+
+      - name: Vikunja Overdue Count
+        unique_id: vikunja_overdue_count
+        icon: mdi:alert-circle
+        state: >-
+          {{ states('sensor.vikunja_overdue_tasks_raw') | int(0) }}
+        unit_of_measurement: tasks
+
+      - name: Vikunja Completed Today
+        unique_id: vikunja_completed_today
+        icon: mdi:check-circle
+        state: >-
+          {{ states('sensor.vikunja_completed_today_raw') | int(0) }}
+        unit_of_measurement: tasks
+
+      - name: Vikunja Quick Wins
+        unique_id: vikunja_quick_wins
+        icon: mdi:lightning-bolt
+        state: >-
+          {% set tasks = state_attr('sensor.vikunja_today_tasks_raw', 'tasks') | default([]) %}
+          {% set count = namespace(n=0) %}
+          {% for t in tasks %}
+            {% if '15min' in (t.description | default('')) or '15 min' in (t.description | default('')) %}
+              {% set count.n = count.n + 1 %}
+            {% endif %}
+          {% endfor %}
+          {{ count.n }}
+        unit_of_measurement: tasks

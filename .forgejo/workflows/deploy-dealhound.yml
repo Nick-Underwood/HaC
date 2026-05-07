@@ -1,0 +1,119 @@
+name: Deploy DealHound
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/DealHound/**"
+      - ".forgejo/workflows/deploy-dealhound.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/DealHound/dealhound.yml"
+
+      - name: Deploy DealHound
+        working-directory: "./Docker-NonCritical/Tools/DealHound"
+        env:
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          UI_STORAGE_SECRET: ${{ secrets.UI_STORAGE_SECRET }}
+          # PriceBuddy
+          PRICEBUDDY_APP_KEY: ${{ secrets.PRICEBUDDY_APP_KEY }}
+          PRICEBUDDY_DB_PASSWORD: ${{ secrets.PRICEBUDDY_DB_PASSWORD }}
+          PRICEBUDDY_DB_ROOT_PASSWORD: ${{ secrets.PRICEBUDDY_DB_ROOT_PASSWORD }}
+          PRICEBUDDY_ADMIN_EMAIL: ${{ vars.PRICEBUDDY_ADMIN_EMAIL }}
+          PRICEBUDDY_ADMIN_PASSWORD: ${{ secrets.PRICEBUDDY_ADMIN_PASSWORD }}
+          # ChangeDetection
+          CHANGEDETECTION_API_KEY: ${{ secrets.CHANGEDETECTION_API_KEY }}
+          # ntfy
+          NTFY_TOPIC: ${{ vars.NTFY_TOPIC || 'dealhound-alerts' }}
+          # eBay
+          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          EBAY_VERIFICATION_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
+          EBAY_DELETION_ENDPOINT_URL: ${{ vars.EBAY_DELETION_ENDPOINT_URL }}
+          # Vikunja (optional)
+          VIKUNJA_BASE_URL: ${{ vars.VIKUNJA_BASE_URL }}
+          VIKUNJA_API_TOKEN: ${{ secrets.VIKUNJA_API_TOKEN }}
+          VIKUNJA_SHOPPING_PROJECT_ID: ${{ vars.VIKUNJA_SHOPPING_PROJECT_ID }}
+          VIKUNJA_WEBHOOK_SECRET: ${{ secrets.VIKUNJA_WEBHOOK_SECRET }}
+          # Mealie (optional)
+          MEALIE_BASE_URL: ${{ vars.MEALIE_BASE_URL }}
+          MEALIE_API_TOKEN: ${{ secrets.MEALIE_API_TOKEN }}
+          # Craigslist
+          CRAIGSLIST_SITES: ${{ vars.CRAIGSLIST_SITES || 'minneapolis' }}
+          CRAIGSLIST_SEARCH_DISTANCE: ${{ vars.CRAIGSLIST_SEARCH_DISTANCE || '50' }}
+          # Facebook Marketplace
+          FACEBOOK_ENABLED: ${{ vars.FACEBOOK_ENABLED || 'false' }}
+          FB_EMAIL: ${{ secrets.FB_EMAIL }}
+          FB_PASSWORD: ${{ secrets.FB_PASSWORD }}
+          FB_LOCATION: ${{ vars.FB_LOCATION || 'minneapolis' }}
+          # HA fallback (optional)
+          HA_BASE_URL: ${{ vars.HA_BASE_URL }}
+          HA_WEBHOOK_ID: ${{ vars.HA_WEBHOOK_ID }}
+        run: |
+          for var in TZ DOMAIN_NAME CERTRESOLVER PRICEBUDDY_APP_KEY PRICEBUDDY_DB_PASSWORD \
+                     PRICEBUDDY_DB_ROOT_PASSWORD PRICEBUDDY_ADMIN_EMAIL PRICEBUDDY_ADMIN_PASSWORD \
+                     EBAY_VERIFICATION_TOKEN UI_STORAGE_SECRET; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Create storage directories (needs sudo on /srv)
+          sudo mkdir -p /srv/dealhound/data
+          sudo mkdir -p /srv/dealhound/fb_session
+          sudo mkdir -p /srv/dealhound/pricebuddy
+          sudo mkdir -p /srv/dealhound/pricebuddy-db
+          sudo mkdir -p /srv/dealhound/changedetection
+          sudo mkdir -p /srv/dealhound/ntfy
+          sudo chown -R nicholas:nicholas /srv/dealhound
+
+          defined_image=$(grep -m1 'image: git\.' dealhound.yml | awk '{print $2}' | sed "s|\${DOMAIN_NAME}|$DOMAIN_NAME|g")
+          checksum=$(sha256sum dealhound.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.dealhound_checksum 2>/dev/null || echo "")
+
+          echo "Defined image: $defined_image"
+          echo "Checksum: $checksum vs $old"
+
+          # Always login and pull so we can detect image digest changes
+          echo "${{ secrets.FORGEJO_REGISTRY_PASSWORD }}" | \
+            docker login git.${DOMAIN_NAME} -u ${{ vars.FORGEJO_REGISTRY_USER }} --password-stdin
+
+          docker pull "$defined_image"
+
+          # Compare digest of freshly-pulled image vs. digest of running container's image
+          new_digest=$(docker inspect --format='{{.Id}}' "$defined_image" 2>/dev/null || echo "new")
+          running_digest=$(docker inspect -f '{{.Image}}' dealhound 2>/dev/null || echo "none")
+
+          echo "New digest:     $new_digest"
+          echo "Running digest: $running_digest"
+
+          if [ "$new_digest" != "$running_digest" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying DealHound (image or compose changed)..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p dealhound -f dealhound.yml down --remove-orphans || true
+            docker compose -p dealhound -f dealhound.yml up -d --force-recreate
+
+            echo "$checksum" > ~/.hac-noncritical/.dealhound_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

@@ -1,0 +1,46 @@
+name: Deploy Kiwix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Docker-Critical/Tools/Kiwix/**"
+      - ".forgejo/workflows/deploy-kiwix.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Tools/Kiwix/kiwix.yml"
+
+      - name: Ensure ZIM directory exists
+        run: mkdir -p /mnt/hdd/kiwix
+
+      - name: Compare running state with desired state
+        working-directory: ./Docker-Critical/Tools/Kiwix
+        run: |
+          defined_image=$(grep -m1 'image:' kiwix.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' kiwix 2>/dev/null || echo "none")
+          current_checksum=$(sha256sum kiwix.yml | awk '{print $1}')
+          old_checksum=$(cat .kiwix_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$current_checksum" != "$old_checksum" ]; then
+            echo "Changes detected, redeploying..."
+            docker rm -f kiwix || true
+            docker compose -p kiwix -f kiwix.yml down --remove-orphans || true
+
+            DOMAIN_NAME=${{ vars.DOMAIN_NAME }} \
+            CERTRESOLVER=${{ vars.CERTRESOLVER }} \
+            docker compose -p kiwix -f kiwix.yml up -d --force-recreate
+
+            echo "$current_checksum" > .kiwix_checksum
+            echo "Deployment complete"
+          else
+            echo "No changes detected, skipping deployment"
+          fi

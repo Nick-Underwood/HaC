@@ -1,0 +1,84 @@
+name: Deploy Garden Planner
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/GardenPlanner/**"
+      - ".forgejo/workflows/deploy-gardenplanner.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/GardenPlanner/gardenplanner.yml"
+
+      - name: Ensure data directory exists
+        run: sudo mkdir -p /srv/gardenplanner/data && sudo chown -R nicholas:nicholas /srv/gardenplanner
+
+      - name: Deploy Garden Planner
+        working-directory: "./Docker-NonCritical/Tools/GardenPlanner"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          GARDEN_API_KEY: ${{ secrets.GARDEN_API_KEY }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER TZ; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          checksum=$(sha256sum gardenplanner.yml | awk '{print $1}')
+          old=$(cat /srv/gardenplanner/.gardenplanner_checksum 2>/dev/null || echo "")
+
+          api_image="git.${DOMAIN_NAME}/nicholas/garden-api:latest"
+          web_image="git.${DOMAIN_NAME}/nicholas/garden-web:latest"
+
+          echo "${{ secrets.FORGEJO_REGISTRY_PASSWORD }}" | \
+            docker login git.${DOMAIN_NAME} -u ${{ vars.FORGEJO_REGISTRY_USER }} --password-stdin
+
+          # Pull manifests to get remote digests (no image download yet)
+          remote_api=$(docker manifest inspect "${api_image}" 2>/dev/null | sha256sum | awk '{print $1}')
+          remote_web=$(docker manifest inspect "${web_image}" 2>/dev/null | sha256sum | awk '{print $1}')
+
+          # Get digest of currently running image layers
+          running_api=$(docker inspect -f '{{.Image}}' gardenplanner-api 2>/dev/null || echo "none")
+          running_web=$(docker inspect -f '{{.Image}}' gardenplanner 2>/dev/null || echo "none")
+
+          echo "API:     remote=${remote_api}  running=${running_api}"
+          echo "Web:     remote=${remote_web}  running=${running_web}"
+          echo "Compose: ${checksum} vs ${old}"
+
+          if [ "${remote_api}${remote_web}${checksum}" != "$(cat /srv/gardenplanner/.gardenplanner_imgsum 2>/dev/null || echo '')${old}" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Garden Planner..."
+
+            docker compose -p gardenplanner -f gardenplanner.yml down --remove-orphans || true
+            docker compose -p gardenplanner -f gardenplanner.yml pull
+            docker compose -p gardenplanner -f gardenplanner.yml up -d --force-recreate || {
+              echo "=== gardenplanner-api logs ==="
+              docker logs gardenplanner-api 2>&1 || true
+              echo "=== gardenplanner logs ==="
+              docker logs gardenplanner 2>&1 || true
+              exit 1
+            }
+
+            echo "$checksum" | sudo tee /srv/gardenplanner/.gardenplanner_checksum > /dev/null
+            echo "${remote_api}${remote_web}${checksum}" | sudo tee /srv/gardenplanner/.gardenplanner_imgsum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

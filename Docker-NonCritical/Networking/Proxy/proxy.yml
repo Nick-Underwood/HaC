@@ -1,0 +1,97 @@
+networks:
+  mediaproxy:
+    name: mediaproxy
+  toolsproxy:
+    name: toolsproxy
+  torrentproxy:
+    name: torrentproxy
+  aiproxy:
+    name: aiproxy
+  secproxy:
+    name: secproxy
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+
+    command:
+      - "--api=true"
+      - "--api.dashboard=true"
+
+      # EntryPoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.ssh.address=:2222"
+
+      # TLS + ACME
+      - "--entrypoints.websecure.http.tls.domains[0].main=${DOMAIN_NAME}"
+      - "--entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN_NAME}"
+      - "--certificatesresolvers.cloudflare.acme.email=${LETS_ENCRYPT_EMAIL}"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.delaybeforecheck=0"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.resolvers[0]=1.1.1.1:53"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.resolvers[1]=8.8.8.8:53"
+      - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme.json"
+
+      # Logging
+      - "--log.level=ERROR"
+
+      # Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+
+    environment:
+      - CLOUDFLARE_EMAIL=${CLOUDFLARE_EMAIL}
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN}
+      - CLOUDFLARE_ZONE_API_TOKEN=${CLOUDFLARE_ZONE_API_TOKEN}
+      - CF_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN}
+      - CF_ZONE_API_TOKEN=${CLOUDFLARE_ZONE_API_TOKEN}
+      - LETS_ENCRYPT_EMAIL=${LETS_ENCRYPT_EMAIL}
+      - TZ=${TZ}
+
+    labels:
+      - "traefik.enable=true"
+
+      # Dashboard
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.rule=Host(`docker-noncritical-traefik.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.dashboard.tls.domains[0].main=docker-noncritical-traefik.${DOMAIN_NAME}"
+
+      #  Authentik ForwardAuth Middleware (GLOBAL)
+      - "traefik.http.middlewares.authentik.forwardauth.address=https://authentik.${DOMAIN_NAME}/outpost.goauthentik.io/auth/traefik"
+      - "traefik.http.middlewares.authentik.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.authentik.forwardauth.authResponseHeaders=X-authentik-username,X-authentik-groups,X-authentik-email,X-authentik-name,X-authentik-uid,Remote-User,Remote-Groups,Remote-Name,Remote-Email"
+
+      # LAN + Tailscale + Docker IP Allowlist (GLOBAL)
+      # Covers: loopback, Docker bridge (172.16/12), RFC-1918 LAN (10/8, 192.168/16), Tailscale CGNAT (100.64/10)
+      - "traefik.http.middlewares.lan-only.ipallowlist.sourcerange=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
+
+      # Home Assistant monitoring
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-NonCritical/Networking/Proxy/proxy.yml"
+      - "ha.service-name=traefik"
+
+    networks:
+      - toolsproxy
+      - mediaproxy
+      - torrentproxy
+      - aiproxy
+      - secproxy
+
+    ports:
+      - 80:80
+      - 443:443
+      - 8080:8080
+      - 8022:8022
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /srv/traefik:/etc/traefik
+
+    restart: unless-stopped

@@ -1,0 +1,99 @@
+name: Deploy MCP Gateway
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+      - ".forgejo/workflows/deploy-mcpgateway.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: |
+          ls -l "./Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+
+      - name: Create data directories
+        run: |
+          sudo mkdir -p /srv/mcp-gateway/config
+          sudo mkdir -p /srv/mcp-gateway/postgres
+          sudo mkdir -p /srv/mcp-gateway/redis
+          echo "Data directories created"
+
+      - name: Deploy MCP Gateway
+        working-directory: "./Docker-NonCritical/Automation/AI/MCPGateway"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          MCP_DB_PASSWORD: ${{ secrets.MCP_DB_PASSWORD }}
+          MCP_JWT_SECRET_KEY: ${{ secrets.MCP_JWT_SECRET_KEY }}
+          MCP_AUTH_ENCRYPTION_SECRET: ${{ secrets.MCP_AUTH_ENCRYPTION_SECRET }}
+          MCP_OIDC_CLIENT_ID: ${{ vars.MCP_OIDC_CLIENT_ID }}
+          MCP_OIDC_CLIENT_SECRET: ${{ secrets.MCP_OIDC_CLIENT_SECRET }}
+        run: |
+          # Validate required secrets
+          for var in MCP_DB_PASSWORD MCP_JWT_SECRET_KEY MCP_AUTH_ENCRYPTION_SECRET MCP_OIDC_CLIENT_SECRET; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required secret: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Validate required vars
+          for var in DOMAIN_NAME CERTRESOLVER MCP_OIDC_CLIENT_ID; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Extract defined image
+          defined_image=$(grep -m1 'image: ghcr.io/ibm/mcp-context-forge' mcpgateway.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' mcp-gateway 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum mcpgateway.yml | awk '{print $1}')
+          old=$(cat .mcpgateway_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying MCP Gateway"
+
+            # Stop and remove existing containers
+            docker stop mcp-gateway 2>/dev/null || true
+            docker rm mcp-gateway 2>/dev/null || true
+            docker stop mcp-postgres 2>/dev/null || true
+            docker rm mcp-postgres 2>/dev/null || true
+            docker stop mcp-redis 2>/dev/null || true
+            docker rm mcp-redis 2>/dev/null || true
+
+            # Clean up with docker compose
+            docker compose -p mcpgateway -f mcpgateway.yml down --remove-orphans || true
+
+            # Deploy
+            docker compose -p mcpgateway -f mcpgateway.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .mcpgateway_checksum
+          else
+            echo "No redeploy needed"
+          fi

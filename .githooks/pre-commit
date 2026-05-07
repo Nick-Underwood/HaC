@@ -1,0 +1,40 @@
+#!/bin/bash
+# Pre-commit hook to block secrets from being committed to HaC public repo
+
+# Patterns that should never be committed
+PATTERNS=(
+  # AWS keys
+  'AKIA[0-9A-Z]{16}'
+  'ASIA[0-9A-Z]{16}'
+  # GitHub tokens
+  'ghp_[A-Za-z0-9]{36}'
+  'github_pat_[A-Za-z0-9_]{20,}'
+  # Slack tokens
+  'xox[baprs]-[A-Za-z0-9-]{10,}'
+  # Private key headers
+  'BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY'
+  # Google API keys
+  'AIza[0-9A-Za-z\-_]{35}'
+  # Passwords in config (basic heuristic)
+  'password\s*[:=]\s*["\x27][A-Za-z0-9!@#$%^&*]{8,}["\x27]'
+  'api_?key\s*[:=]\s*["\x27][A-Za-z0-9_-]{20,}["\x27]'
+)
+
+FOUND_SECRETS=0
+
+for pattern in "${PATTERNS[@]}"; do
+  if git diff --cached --name-only -z | xargs -0 git diff --cached -U0 | grep -qE "$pattern"; then
+    echo "❌ Pre-commit hook: High-confidence secret pattern detected: $pattern"
+    FOUND_SECRETS=1
+  fi
+done
+
+# Block commits with secret patterns
+if [ $FOUND_SECRETS -eq 1 ]; then
+  echo ""
+  echo "⚠️  This commit would expose secrets to the public HaC repository."
+  echo "   Please remove the secrets, stage again, and retry."
+  exit 1
+fi
+
+exit 0

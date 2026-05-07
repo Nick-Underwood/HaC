@@ -1,0 +1,68 @@
+name: Deploy DocSight
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/DocSight/docsight.yml"
+      - "Docker-NonCritical/Tools/DocSight/modules/**"
+      - ".forgejo/workflows/deploy-docsight.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/DocSight/docsight.yml"
+
+      - name: Sync community modules
+        run: |
+          sudo mkdir -p /srv/docsight/modules
+          sudo cp -r "./Docker-NonCritical/Tools/DocSight/modules/." /srv/docsight/modules/
+          sudo rm -rf /srv/docsight/modules/*/__pycache__ /srv/docsight/modules/*/*/__pycache__ 2>/dev/null || true
+          sudo chown -R nicholas:nicholas /srv/docsight/modules
+
+      - name: Deploy DocSight
+        working-directory: "./Docker-NonCritical/Tools/DocSight"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          MQTT_HOST: ${{ vars.MQTT_HOST }}
+          MQTT_PORT: ${{ vars.MQTT_PORT }}
+          MQTT_USER: ${{ vars.MQTT_USER }}
+          MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+          DOCSIGHT_PUBLIC_URL: ${{ vars.DOCSIGHT_PUBLIC_URL }}
+          DOCSIGHT_LOG_LEVEL: ${{ vars.DOCSIGHT_LOG_LEVEL }}
+          DOCSIGHT_AUDIT_JSON: ${{ vars.DOCSIGHT_AUDIT_JSON }}
+          DOCSIGHT_MQTT_TOPIC_PREFIX: ${{ vars.DOCSIGHT_MQTT_TOPIC_PREFIX }}
+          DOCSIGHT_MQTT_DISCOVERY_PREFIX: ${{ vars.DOCSIGHT_MQTT_DISCOVERY_PREFIX }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER TZ; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          env DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER TZ=$TZ \
+            MQTT_HOST=${MQTT_HOST:-} MQTT_PORT=${MQTT_PORT:-1883} MQTT_USER=${MQTT_USER:-} MQTT_PASSWORD=${MQTT_PASSWORD:-} \
+            DOCSIGHT_PUBLIC_URL=${DOCSIGHT_PUBLIC_URL:-} DOCSIGHT_LOG_LEVEL=${DOCSIGHT_LOG_LEVEL:-INFO} DOCSIGHT_AUDIT_JSON=${DOCSIGHT_AUDIT_JSON:-1} \
+            DOCSIGHT_MQTT_TOPIC_PREFIX=${DOCSIGHT_MQTT_TOPIC_PREFIX:-docsight} DOCSIGHT_MQTT_DISCOVERY_PREFIX=${DOCSIGHT_MQTT_DISCOVERY_PREFIX:-homeassistant} \
+            docker compose -p docsight -f docsight.yml down --remove-orphans || true
+
+          env DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER TZ=$TZ \
+            MQTT_HOST=${MQTT_HOST:-} MQTT_PORT=${MQTT_PORT:-1883} MQTT_USER=${MQTT_USER:-} MQTT_PASSWORD=${MQTT_PASSWORD:-} \
+            DOCSIGHT_PUBLIC_URL=${DOCSIGHT_PUBLIC_URL:-} DOCSIGHT_LOG_LEVEL=${DOCSIGHT_LOG_LEVEL:-INFO} DOCSIGHT_AUDIT_JSON=${DOCSIGHT_AUDIT_JSON:-1} \
+            DOCSIGHT_MQTT_TOPIC_PREFIX=${DOCSIGHT_MQTT_TOPIC_PREFIX:-docsight} DOCSIGHT_MQTT_DISCOVERY_PREFIX=${DOCSIGHT_MQTT_DISCOVERY_PREFIX:-homeassistant} \
+            docker compose -p docsight -f docsight.yml up -d --force-recreate

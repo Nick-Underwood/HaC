@@ -1,0 +1,67 @@
+name: Deploy Vikunja
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/Vikunja/**"
+      - ".forgejo/workflows/deploy-vikunja.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Vikunja compose file exists
+        run: |
+          ls -l "./Docker-Critical/Home/Vikunja/vikunja.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-Critical/Home/Vikunja"
+        env:
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          TZ: ${{ vars.TZ }}
+          VIKUNJA_DB_PASSWORD: ${{ secrets.VIKUNJA_DB_PASSWORD }}
+          VIKUNJA_JWT_SECRET: ${{ secrets.VIKUNJA_JWT_SECRET }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' vikunja.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' vikunja 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum vikunja.yml | awk '{print $1}')
+          old=$(cat /srv/vikunja/.vikunja_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Vikunja..."
+
+            sudo mkdir -p /srv/vikunja/files
+            sudo mkdir -p /srv/vikunja/postgres
+            docker run --rm -v /srv/vikunja/files:/data alpine chown -R 1000:1000 /data
+            sudo cp vikunja.yml /srv/vikunja/
+            sudo chmod 644 /srv/vikunja/vikunja.yml
+
+            cd /srv/vikunja
+            CERTRESOLVER=${CERTRESOLVER:-cloudflare} \
+            DOMAIN_NAME=$DOMAIN_NAME \
+            TZ=${TZ:-America/Chicago} \
+            VIKUNJA_DB_PASSWORD=$VIKUNJA_DB_PASSWORD \
+            VIKUNJA_JWT_SECRET=$VIKUNJA_JWT_SECRET \
+            docker compose -p vikunja -f vikunja.yml up -d --force-recreate
+
+            echo "$checksum" > /srv/vikunja/.vikunja_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

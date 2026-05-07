@@ -1,0 +1,51 @@
+name: Validate Service Catalog
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "development/service-catalog/**"
+      - "scripts/validate_service_catalog.ps1"
+      - "scripts/generate_service_catalog_inventory.ps1"
+      - "scripts/validate_service_catalog.py"
+      - "scripts/generate_service_catalog_inventory.py"
+      - "scripts/sync_service_catalog.ps1"
+      - ".forgejo/workflows/deploy-*.yml"
+      - ".forgejo/workflows/validate-service-catalog.yml"
+      - "Docker-Critical/**"
+      - "Docker-NonCritical/**"
+  pull_request:
+    paths:
+      - "development/service-catalog/**"
+      - "scripts/validate_service_catalog.ps1"
+      - "scripts/generate_service_catalog_inventory.ps1"
+      - "scripts/validate_service_catalog.py"
+      - "scripts/generate_service_catalog_inventory.py"
+      - "scripts/sync_service_catalog.ps1"
+      - ".forgejo/workflows/deploy-*.yml"
+      - ".forgejo/workflows/validate-service-catalog.yml"
+      - "Docker-Critical/**"
+      - "Docker-NonCritical/**"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: docker-critical
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Regenerate inventory snapshot
+        shell: bash
+        run: python scripts/generate_service_catalog_inventory.py
+
+      - name: Validate canonical catalog
+        shell: bash
+        run: python scripts/validate_service_catalog.py

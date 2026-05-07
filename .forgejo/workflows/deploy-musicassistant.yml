@@ -1,0 +1,51 @@
+name: Deploy Music Assistant
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/MusicAssistant/**"
+      - ".forgejo/workflows/deploy-musicassistant.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l ./Docker-Critical/Home/MusicAssistant/musicassistant.yml
+
+      - name: Compare image and config
+        working-directory: ./Docker-Critical/Home/MusicAssistant
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+        run: |
+          # Check if image or config changed; redeploy if needed
+          defined_image=$(grep -m1 'image:' musicassistant.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' music-assistant 2>/dev/null || echo "none")
+          checksum=$(sha256sum musicassistant.yml | awk '{print $1}')
+          old=$(cat .musicassistant_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Music Assistant..."
+            # Stop and remove the container if it exists
+            docker stop music-assistant 2>/dev/null || true
+            docker rm music-assistant 2>/dev/null || true
+            # Clean up with docker compose
+            docker compose -p music-assistant -f musicassistant.yml down --remove-orphans || true
+            DOMAIN_NAME="$DOMAIN_NAME" CERTRESOLVER="$CERTRESOLVER" TZ="$TZ" docker compose -p music-assistant -f musicassistant.yml up -d --force-recreate
+            echo "$checksum" > .musicassistant_checksum
+            docker logs music-assistant --tail 20
+          else
+            echo "No changes detected, skipping redeploy"
+          fi

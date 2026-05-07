@@ -1,0 +1,167 @@
+services:
+  netbox:
+    image: netboxcommunity/netbox:latest
+    container_name: netbox
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    depends_on:
+      - netbox-postgres
+      - netbox-redis
+    environment:
+      # Core
+      ALLOWED_HOSTS: ${NETBOX_ALLOWED_HOSTS}
+      DB_NAME: ${NETBOX_DB_NAME}
+      DB_USER: ${NETBOX_DB_USER}
+      DB_PASSWORD: ${NETBOX_DB_PASSWORD}
+      DB_HOST: ${NETBOX_DB_HOST}
+      REDIS_HOST: ${NETBOX_REDIS_HOST}
+
+      # SSO via Authelia/Traefik forward-auth (Remote-User header)
+      REMOTE_AUTH_ENABLED: "true"
+      REMOTE_AUTH_HEADER: HTTP_REMOTE_USER
+      REMOTE_AUTH_AUTO_CREATE_USER: "true"
+      REMOTE_AUTH_GROUP_SYNC_ENABLED: "true"
+      REMOTE_AUTH_BACKEND: netbox.authentication.RemoteUserBackend
+
+      # Security
+      SECRET_KEY: ${NETBOX_SECRET_KEY}
+      API_TOKEN_PEPPERS: ${NETBOX_API_TOKEN_PEPPERS}
+
+      # Email (optional)
+      EMAIL_FROM: ${NETBOX_EMAIL_FROM}
+      EMAIL_SERVER: ${NETBOX_EMAIL_SERVER}
+      EMAIL_PORT: ${NETBOX_EMAIL_PORT}
+      EMAIL_USERNAME: ${SMTP_USERNAME}
+      EMAIL_PASSWORD: ${SMTP_PASSWORD}
+
+      # Metrics
+      METRICS_ENABLED: ${NETBOX_METRICS_ENABLED}
+
+      # Sync script configuration
+      TRUENAS_URL: ${TRUENAS_URL}
+      TRUENAS_API_KEY: ${TRUENAS_API_KEY}
+      OPNSENSE_URL: ${OPNSENSE_URL}
+      OPNSENSE_API_KEY: ${OPNSENSE_API_KEY}
+      OPNSENSE_API_SECRET: ${OPNSENSE_API_SECRET}
+      OMADA_URL: ${OMADA_URL}
+      OMADA_USERNAME: ${OMADA_USERNAME}
+      OMADA_PASSWORD: ${OMADA_PASSWORD}
+      OMADA_SITE_NAME: ${OMADA_SITE_NAME}
+      DOCKER_HOST: ${DOCKER_HOST}
+      DOCKER_SITE: ${DOCKER_SITE}
+      NETBOX_TOKEN: ${NETBOX_API_TOKEN}
+      VERIFY_SSL: ${VERIFY_SSL}
+
+    volumes:
+      - /srv/netbox/media:/opt/netbox/netbox/media
+      - /srv/netbox/reports:/opt/netbox/netbox/reports
+      - /srv/netbox/scripts:/opt/netbox/netbox/scripts
+      - /srv/netbox/theme/extra.py:/etc/netbox/config/extra.py:ro
+      - /srv/netbox/theme/sage.css:/opt/netbox/netbox/static/netbox/css/sage.css:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.netbox.entrypoints=websecure
+      - traefik.http.routers.netbox.rule=Host(`netbox.${DOMAIN_NAME}`)
+      - traefik.http.routers.netbox.service=netbox
+      - traefik.http.services.netbox.loadbalancer.server.port=8080
+      - traefik.docker.network=toolsproxy
+      # TODO: Enable Authentik middleware once forward-auth is configured
+      # - traefik.http.routers.netbox.middlewares=authentik@docker
+      - traefik.http.routers.netbox.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.netbox.tls.domains[0].main=netbox.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/NetBox/netbox.yml"
+      - "ha.service-name=netbox"
+
+  netbox-worker:
+    image: netboxcommunity/netbox:latest
+    container_name: netbox-worker
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    depends_on:
+      - netbox
+    environment:
+      ALLOWED_HOSTS: ${NETBOX_ALLOWED_HOSTS}
+      DB_NAME: ${NETBOX_DB_NAME}
+      DB_USER: ${NETBOX_DB_USER}
+      DB_PASSWORD: ${NETBOX_DB_PASSWORD}
+      DB_HOST: ${NETBOX_DB_HOST}
+      REDIS_HOST: ${NETBOX_REDIS_HOST}
+      SECRET_KEY: ${NETBOX_SECRET_KEY}
+      API_TOKEN_PEPPERS: ${NETBOX_API_TOKEN_PEPPERS}
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/NetBox/netbox.yml"
+      - "ha.service-name=netbox-worker"
+
+  netbox-housekeeping:
+    image: netboxcommunity/netbox:latest
+    container_name: netbox-housekeeping
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    depends_on:
+      - netbox
+    environment:
+      ALLOWED_HOSTS: ${NETBOX_ALLOWED_HOSTS}
+      DB_NAME: ${NETBOX_DB_NAME}
+      DB_USER: ${NETBOX_DB_USER}
+      DB_PASSWORD: ${NETBOX_DB_PASSWORD}
+      DB_HOST: ${NETBOX_DB_HOST}
+      REDIS_HOST: ${NETBOX_REDIS_HOST}
+      SECRET_KEY: ${NETBOX_SECRET_KEY}
+      API_TOKEN_PEPPERS: ${NETBOX_API_TOKEN_PEPPERS}
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py housekeeping
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/NetBox/netbox.yml"
+      - "ha.service-name=netbox-housekeeping"
+
+  netbox-postgres:
+    image: postgres:15-alpine
+    container_name: netbox-postgres
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    environment:
+      POSTGRES_DB: ${NETBOX_DB_NAME}
+      POSTGRES_USER: ${NETBOX_DB_USER}
+      POSTGRES_PASSWORD: ${NETBOX_DB_PASSWORD}
+    volumes:
+      - /srv/netbox/postgres:/var/lib/postgresql/data
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/NetBox/netbox.yml"
+      - "ha.service-name=netbox-postgres"
+
+  netbox-redis:
+    image: redis:7-alpine
+    container_name: netbox-redis
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - /srv/netbox/redis:/data
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/NetBox/netbox.yml"
+      - "ha.service-name=netbox-redis"
+
+networks:
+  toolsproxy:
+    external: true

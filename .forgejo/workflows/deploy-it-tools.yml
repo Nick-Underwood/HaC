@@ -1,0 +1,54 @@
+name: Deploy IT-Tools
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/IT-Tools/it-tools.yml"
+      - ".forgejo/workflows/deploy-it-tools.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/IT-Tools/it-tools.yml"
+
+      - name: Deploy IT-Tools
+        working-directory: "./Docker-NonCritical/Tools/IT-Tools"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' it-tools.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' it-tools 2>/dev/null || echo "none")
+          checksum=$(sha256sum it-tools.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.it-tools_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying IT-Tools..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p it-tools down --remove-orphans || true
+            docker compose -p it-tools -f it-tools.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.it-tools_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

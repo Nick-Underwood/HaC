@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+.github/copilot-instructions.md filter=git-crypt diff=git-crypt
+.github/agents/** filter=git-crypt diff=git-crypt
+.github/prompts/** filter=git-crypt diff=git-crypt
+.github/instructions/** filter=git-crypt diff=git-crypt
+*.instructions.md filter=git-crypt diff=git-crypt
+*.agent.md filter=git-crypt diff=git-crypt
+*.prompt.md filter=git-crypt diff=git-crypt
+AGENTS.md filter=git-crypt diff=git-crypt
+SKILL.md filter=git-crypt diff=git-crypt
+copilot-instructions.md filter=git-crypt diff=git-crypt
+*.code-workspace.local filter=git-crypt diff=git-crypt

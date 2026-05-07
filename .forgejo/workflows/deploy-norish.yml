@@ -1,0 +1,78 @@
+name: Deploy Norish
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/Cooking/**"
+      - ".forgejo/workflows/deploy-norish.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Norish compose file exists
+        shell: sh
+        run: |
+          ls -l "./Docker-Critical/Home/Cooking/norish.yml"
+
+      - name: Compare image and config
+        shell: sh
+        working-directory: "./Docker-Critical/Home/Cooking"
+        env:
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          NORISH_MASTER_KEY: ${{ secrets.NORISH_MASTER_KEY }}
+          NORISH_OIDC_CLIENT_ID: ${{ vars.NORISH_OIDC_CLIENT_ID }}
+          NORISH_OIDC_CLIENT_SECRET: ${{ secrets.NORISH_OIDC_CLIENT_SECRET }}
+          NORISH_DB_PASSWORD: ${{ secrets.NORISH_DB_PASSWORD }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' norish.yml | awk '{print $2}')
+
+          # Extract running image from remote host
+          running_image=$(docker inspect -f '{{.Config.Image}}' norish-app 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum norish.yml | awk '{print $1}')
+          old=$(cat .norish_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Norish..."
+
+            # Copy compose file to local /srv
+            sudo mkdir -p /srv/norish
+            sudo cp norish.yml /srv/norish/
+            sudo chmod 644 /srv/norish/norish.yml
+
+            # Deploy locally
+            cd /srv/norish
+            docker rm -f norish-app norish-db norish-redis chrome-headless || true
+            docker compose -p norish -f norish.yml down --remove-orphans || true
+            CERTRESOLVER=${CERTRESOLVER:-cloudflare} \
+            DOMAIN_NAME=$DOMAIN_NAME \
+            NORISH_MASTER_KEY=$NORISH_MASTER_KEY \
+            NORISH_OIDC_CLIENT_ID=$NORISH_OIDC_CLIENT_ID \
+            NORISH_OIDC_CLIENT_SECRET=$NORISH_OIDC_CLIENT_SECRET \
+            NORISH_DB_PASSWORD=$NORISH_DB_PASSWORD \
+            docker compose -p norish -f norish.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" | sudo tee /srv/norish/.norish_checksum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

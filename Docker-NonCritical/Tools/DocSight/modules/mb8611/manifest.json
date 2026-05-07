@@ -1,0 +1,12 @@
+{
+  "id": "community.mb8611",
+  "name": "Motorola MB8611",
+  "description": "Driver for the Motorola MB8611 DOCSIS 3.1 cable modem",
+  "version": "0.1.0",
+  "author": "thunder3596a",
+  "minAppVersion": "2026.2",
+  "type": "driver",
+  "contributes": {
+    "driver": "driver.py:MB8611Driver"
+  }
+}

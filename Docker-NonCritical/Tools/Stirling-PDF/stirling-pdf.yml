@@ -1,0 +1,42 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  stirling-pdf:
+    image: frooodle/s-pdf:latest
+    container_name: stirling-pdf
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    environment:
+      - DOCKER_ENABLE_SECURITY=false
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/Stirling-PDF/stirling-pdf.yml
+      - ha.service-name=stirling-pdf
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.pdf.entrypoints=websecure
+      - traefik.http.routers.pdf.rule=Host(`pdf.${DOMAIN_NAME}`)
+      - traefik.http.routers.pdf.service=pdf
+      - traefik.http.services.pdf.loadbalancer.server.port=8080
+      - traefik.http.routers.pdf.tls.certresolver=${CERTRESOLVER}
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/stirling-pdf/config:/configs

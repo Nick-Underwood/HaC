@@ -1,0 +1,244 @@
+name: Deploy Wazuh
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Security/**"
+      - ".forgejo/workflows/deploy-wazuh.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Wazuh compose file exists
+        run: |
+          ls -l "./Docker-NonCritical/Security/security.yaml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Security"
+        env:
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          WAZUH_VERSION: ${{ vars.WAZUH_VERSION }}
+          WAZUH_INDEXER_USERNAME: ${{ vars.WAZUH_INDEXER_USERNAME }}
+          WAZUH_API_USERNAME: ${{ vars.WAZUH_API_USERNAME }}
+          WAZUH_INDEXER_PASSWORD: ${{ secrets.WAZUH_INDEXER_PASSWORD }}
+          WAZUH_API_PASSWORD: ${{ secrets.WAZUH_API_PASSWORD }}
+        run: |
+          # Extract defined image versions
+          defined_indexer=$(grep -A2 'wazuh.indexer:' security.yaml | grep 'image:' | awk '{print $2}')
+          defined_manager=$(grep -A2 'wazuh.manager:' security.yaml | grep 'image:' | awk '{print $2}')
+          defined_dashboard=$(grep -A2 'wazuh.dashboard:' security.yaml | grep 'image:' | awk '{print $2}')
+
+          # Extract running images
+          running_indexer=$(docker inspect -f '{{.Config.Image}}' wazuh-indexer 2>/dev/null || echo "none")
+          running_manager=$(docker inspect -f '{{.Config.Image}}' wazuh-manager 2>/dev/null || echo "none")
+          running_dashboard=$(docker inspect -f '{{.Config.Image}}' wazuh-dashboard 2>/dev/null || echo "none")
+
+          # Compute checksum of compose + all config files
+          checksum=$(cat security.yaml manager-config/wazuh_manager.conf indexer-config/opensearch.yml indexer-config/ism-policy.json indexer-config/apply-ism-policy.sh dashboard-config/opensearch_dashboards.yml | sha256sum | awk '{print $1}')
+
+          # Store checksum on persistent host path (git checkout is ephemeral)
+          CHECKSUM_FILE="/srv/wazuh/.deploy_checksum"
+          old=$(cat "$CHECKSUM_FILE" 2>/dev/null || echo "")
+
+          echo "Indexer - Defined: $defined_indexer | Running: $running_indexer"
+          echo "Manager - Defined: $defined_manager | Running: $running_manager"
+          echo "Dashboard - Defined: $defined_dashboard | Running: $running_dashboard"
+          echo "Checksum: $checksum vs $old"
+
+          # Detect whether images changed (version upgrade) vs config-only change
+          IMAGE_CHANGED=false
+          if [ "$defined_indexer" != "$running_indexer" ] || \
+             [ "$defined_manager" != "$running_manager" ] || \
+             [ "$defined_dashboard" != "$running_dashboard" ]; then
+            IMAGE_CHANGED=true
+          fi
+
+          CONFIG_CHANGED=false
+          if [ "$checksum" != "$old" ]; then
+            CONFIG_CHANGED=true
+          fi
+
+          # Check if manager services are actually healthy (catch broken previous deploys)
+          MANAGER_HEALTHY=true
+          if docker ps --format '{{.Names}}' | grep -q wazuh-manager; then
+            if ! docker exec wazuh-manager /var/ossec/bin/wazuh-control status 2>/dev/null | grep -q "wazuh-analysisd is running"; then
+              MANAGER_HEALTHY=false
+              echo "Manager exists but analysisd is not running — forcing redeploy"
+            fi
+          else
+            MANAGER_HEALTHY=false
+          fi
+
+          if [ "$IMAGE_CHANGED" = "false" ] && [ "$CONFIG_CHANGED" = "false" ] && [ "$MANAGER_HEALTHY" = "true" ]; then
+            echo "No redeploy needed"
+            exit 0
+          fi
+
+          echo "Redeploying Wazuh stack (image_changed=$IMAGE_CHANGED, config_changed=$CONFIG_CHANGED)"
+
+          # Compose env helper
+          compose_env() {
+            TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              WAZUH_VERSION=$WAZUH_VERSION \
+              WAZUH_INDEXER_USERNAME=$WAZUH_INDEXER_USERNAME \
+              WAZUH_API_USERNAME=$WAZUH_API_USERNAME \
+              WAZUH_INDEXER_PASSWORD=$WAZUH_INDEXER_PASSWORD \
+              WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD \
+              "$@"
+          }
+
+          compose_env docker compose -p wazuh -f security.yaml down --remove-orphans || true
+          sleep 5
+
+          if [ "$IMAGE_CHANGED" = "true" ]; then
+            echo "Version change detected — removing named volumes for clean re-init"
+
+            # Remove Docker named volumes so they get re-populated from the new image.
+            # Named volumes auto-populate from the image on first creation.
+            docker volume rm \
+              wazuh_wazuh_api_configuration wazuh_wazuh_etc wazuh_wazuh_logs \
+              wazuh_wazuh_queue wazuh_wazuh_var_multigroups wazuh_wazuh_integrations \
+              wazuh_wazuh_active_response wazuh_wazuh_agentless wazuh_wazuh_wodles \
+              wazuh_filebeat_etc wazuh_filebeat_var \
+              wazuh_wazuh-dashboard-custom \
+              2>/dev/null || true
+
+            # Also clean indexer data for version upgrades
+            rm -rf /srv/wazuh/indexer-data/*
+          else
+            echo "Config-only change — preserving existing volumes"
+          fi
+
+          # Ensure indexer bind-mount dir exists with correct ownership
+          sudo mkdir -p /srv/wazuh/indexer-data
+          sudo chown -R 1000:1000 /srv/wazuh/indexer-data
+
+          # Copy config files to stable host paths so containers can be
+          # restarted independently of the CI runner's ephemeral checkout dir
+          sudo mkdir -p /srv/wazuh/indexer /srv/wazuh/manager /srv/wazuh/dashboard
+          sudo cp indexer-config/opensearch.yml /srv/wazuh/indexer/opensearch.yml
+          sudo cp indexer-config/ism-policy.json /srv/wazuh/indexer/ism-policy.json
+          sudo cp indexer-config/apply-ism-policy.sh /srv/wazuh/indexer/apply-ism-policy.sh
+          sudo chmod +x /srv/wazuh/indexer/apply-ism-policy.sh
+          sudo cp manager-config/wazuh_manager.conf /srv/wazuh/manager/wazuh_manager.conf
+          sudo cp dashboard-config/opensearch_dashboards.yml /srv/wazuh/dashboard/opensearch_dashboards.yml
+
+          # Ensure NFS archive target exists
+          YEAR=$(date +%Y)
+          mkdir -p /mnt/data/wazuh/archives/$YEAR
+
+          # Generate dashboard wazuh.yml with actual API credentials
+          # (bind-mounted into the container alongside the named volume)
+          sudo mkdir -p /srv/wazuh/dashboard
+          # wazuh.yml may exist as a directory from a failed previous deploy — remove it
+          [ -d /srv/wazuh/dashboard/wazuh.yml ] && sudo rm -rf /srv/wazuh/dashboard/wazuh.yml
+          printf 'hosts:\n  - default:\n      url: https://wazuh.manager\n      port: 55000\n      username: %s\n      password: "%s"\n      run_as: false\n' \
+            "${WAZUH_API_USERNAME:-wazuh-wui}" "$WAZUH_API_PASSWORD" \
+            > /srv/wazuh/dashboard/wazuh.yml
+          sudo chmod 666 /srv/wazuh/dashboard/wazuh.yml
+
+          compose_env docker compose -p wazuh -f security.yaml up -d --force-recreate
+
+          # Stage checksum for saving AFTER successful verification.
+          # Do NOT save it now — a broken deploy must be retried next run.
+          echo "$checksum" > /srv/wazuh/.deploy_checksum_pending
+
+          echo "✅ Wazuh stack deployed successfully"
+          echo "🌐 Access at: https://wazuh.$DOMAIN_NAME"
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for services to initialize..."
+          sleep 30
+
+          # Check if containers are running
+          docker ps | grep wazuh-indexer && echo "✅ Indexer running" || echo "❌ Indexer not running"
+          docker ps | grep wazuh-manager && echo "✅ Manager running" || echo "❌ Manager not running"
+          docker ps | grep wazuh-dashboard && echo "✅ Dashboard running" || echo "❌ Dashboard not running"
+
+          # Dump full manager service status for diagnostics
+          echo ""
+          echo "Full wazuh-control status:"
+          docker exec wazuh-manager /var/ossec/bin/wazuh-control status 2>/dev/null || echo "(wazuh-control not available yet)"
+
+          echo ""
+          echo "Checking ossec.conf exists:"
+          docker exec wazuh-manager ls -la /var/ossec/etc/ossec.conf 2>/dev/null || echo "❌ ossec.conf missing!"
+
+          # Verify analysisd is running inside the manager (critical service)
+          # Fresh deployments need 2-3+ minutes for /init to generate certs,
+          # configure filebeat, wait for indexer, and start all services.
+          echo ""
+          echo "Checking wazuh-analysisd..."
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if docker exec wazuh-manager /var/ossec/bin/wazuh-control status 2>/dev/null | grep -q "wazuh-analysisd is running"; then
+              echo "✅ wazuh-analysisd is running"
+              # Commit the pending checksum — deploy is confirmed healthy.
+              # This ensures failed deploys are always retried on next run.
+              if [ -f /srv/wazuh/.deploy_checksum_pending ]; then
+                mv /srv/wazuh/.deploy_checksum_pending /srv/wazuh/.deploy_checksum
+              fi
+              break
+            fi
+            if [ "$i" -eq 12 ]; then
+              echo "❌ wazuh-analysisd failed to start after 180s"
+              echo ""
+              echo "=== wazuh-control status ==="
+              docker exec wazuh-manager /var/ossec/bin/wazuh-control status 2>/dev/null || true
+              echo ""
+              echo "=== Manager logs (last 80 lines) ==="
+              docker exec wazuh-manager tail -80 /var/ossec/logs/ossec.log 2>/dev/null || true
+              echo ""
+              echo "=== /var/ossec/etc/ contents ==="
+              docker exec wazuh-manager ls -la /var/ossec/etc/ 2>/dev/null || true
+              echo ""
+              echo "=== ossec.conf first 20 lines ==="
+              docker exec wazuh-manager head -20 /var/ossec/etc/ossec.conf 2>/dev/null || true
+              echo ""
+              echo "=== Container logs (last 60 lines) ==="
+              docker logs --tail 60 wazuh-manager 2>&1 || true
+              exit 1
+            fi
+            echo "  Attempt $i/12 — analysisd not ready yet, waiting 15s..."
+            sleep 15
+          done
+
+      - name: Notify Home Assistant
+        if: always()
+        env:
+          HA_URL: ${{ vars.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_LONG_LIVED_TOKEN }}
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            MESSAGE="✅ Wazuh deployment successful"
+            SEVERITY="info"
+          else
+            MESSAGE="❌ Wazuh deployment failed"
+            SEVERITY="error"
+          fi
+
+          curl -X POST "$HA_URL/api/services/notify/persistent_notification" \
+            -H "Authorization: Bearer $HA_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"message\": \"$MESSAGE\",
+              \"title\": \"Wazuh Deployment\",
+              \"data\": {
+                \"tag\": \"wazuh-deployment\"
+              }
+            }" || echo "Failed to notify Home Assistant"

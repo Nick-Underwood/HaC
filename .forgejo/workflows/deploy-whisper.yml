@@ -1,0 +1,49 @@
+name: Deploy Whisper
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/Whisper/**"
+      - ".forgejo/workflows/deploy-whisper.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Whisper
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+        run: |
+          defined_image=$(grep -m1 'image:' Docker-Critical/Home/Whisper/whisper.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' whisper 2>/dev/null || echo "none")
+          checksum=$(sha256sum Docker-Critical/Home/Whisper/whisper.yml | awk '{print $1}')
+          old=$(sudo cat /srv/whisper/.whisper_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Whisper..."
+            sudo mkdir -p /srv/whisper
+            sudo cp Docker-Critical/Home/Whisper/whisper.yml /srv/whisper/
+            sudo chmod 644 /srv/whisper/whisper.yml
+
+            cd /srv/whisper
+            env DOMAIN_NAME=$DOMAIN_NAME \
+              CERTRESOLVER=${CERTRESOLVER:-cloudflare} \
+              TZ=${TZ:-America/Chicago} \
+              docker compose -p whisper -f whisper.yml up -d --force-recreate
+
+            sudo sh -c "echo '$checksum' > /srv/whisper/.whisper_checksum"
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

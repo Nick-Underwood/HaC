@@ -1,0 +1,40 @@
+{
+  "policy": {
+    "policy_id": "wazuh-index-retention",
+    "description": "Delete Wazuh indices older than 30 days. Compressed archives persist on NFS at /mnt/data/wazuh/archives.",
+    "default_state": "active",
+    "states": [
+      {
+        "name": "active",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "30d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["wazuh-alerts-*"],
+        "priority": 100
+      },
+      {
+        "index_patterns": ["wazuh-archives-*"],
+        "priority": 100
+      }
+    ]
+  }
+}

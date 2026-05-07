@@ -1,0 +1,8 @@
+network.host: 0.0.0.0
+discovery.type: single-node
+bootstrap.memory_lock: true
+compatibility.override_main_response_version: true
+
+# Disable security plugin entirely (SSL + auth)
+# Traefik handles external SSL; Docker network is trusted
+plugins.security.disabled: true

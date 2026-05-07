@@ -1,0 +1,226 @@
+name: Apply Updates - Docker Critical
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: 'Containers to update (comma-separated, or "all" for all with updates)'
+        required: false
+        default: 'all'
+        type: string
+      bootstrap:
+        description: 'Bootstrap mode: recreate all containers to apply labels'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  apply-updates:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Pull and recreate containers
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          DNS_SERVER: ${{ vars.DNS_SERVER }}
+          HA_HOST_IP: ${{ vars.HA_HOST_IP }}
+          HOMEASSISTANT_MARIADB_ROOT_PASSWORD: ${{ secrets.HOMEASSISTANT_MARIADB_ROOT_PASSWORD }}
+          HOMEASSISTANT_MARIADB_PASSWORD: ${{ secrets.HOMEASSISTANT_MARIADB_PASSWORD }}
+          CLOUDFLARE_EMAIL: ${{ vars.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+          CLOUDFLARE_ZONE_API_TOKEN: ${{ secrets.CLOUDFLARE_ZONE_API_TOKEN }}
+          LETS_ENCRYPT_EMAIL: ${{ vars.LETS_ENCRYPT_EMAIL }}
+          NORISH_DB_PASSWORD: ${{ secrets.NORISH_DB_PASSWORD }}
+          NORISH_OIDC_CLIENT_SECRET: ${{ secrets.NORISH_OIDC_CLIENT_SECRET }}
+          NORISH_MASTER_KEY: ${{ secrets.NORISH_MASTER_KEY }}
+          N8N_BASIC_AUTH_USER: ${{ secrets.N8N_BASIC_AUTH_USER }}
+          N8N_BASIC_AUTH_PASSWORD: ${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
+          N8N_DB_PASSWORD: ${{ secrets.N8N_DB_PASSWORD }}
+          GIT_DB_PASSWORD: ${{ secrets.GIT_DB_PASSWORD }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+          AUTHELIA_DB_PASSWORD: ${{ secrets.AUTHELIA_DB_PASSWORD }}
+          INFLUXDB_ADMIN_PASSWORD: ${{ secrets.INFLUXDB_ADMIN_PASSWORD }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+          BOOTSTRAP: ${{ github.event.inputs.bootstrap }}
+        run: |
+          # Build container maps from Docker labels (ha.monitor=true) OR from git compose files (bootstrap mode)
+          declare -A COMPOSE_MAP
+          declare -A SERVICE_MAP
+
+          if [ "$BOOTSTRAP" = "true" ]; then
+            echo "=== BOOTSTRAP MODE: Building maps from git compose files ==="
+            echo "DEBUG: Current directory is $(pwd)"
+            echo "DEBUG: Looking for compose files..."
+
+            # Find all compose files with ha.monitor=true labels in git
+            compose_files=$(find Docker-Critical -name "*.yml" -type f 2>/dev/null || echo "")
+            echo "DEBUG: Found compose files: $compose_files"
+
+            for compose_file in $compose_files; do
+              if [ -f "$compose_file" ]; then
+                # Check if this file has ha.monitor=true
+                if grep -q "ha.monitor=true" "$compose_file"; then
+                  echo "DEBUG: Processing $compose_file"
+
+                  # Find line number where services: section starts
+                  services_line=$(grep -n "^services:" "$compose_file" | head -1 | cut -d: -f1)
+                  echo "DEBUG: services: found at line $services_line"
+
+                  # Get all line numbers where ha.monitor=true appears
+                  monitor_lines=$(grep -n "ha.monitor=true" "$compose_file" | cut -d: -f1)
+
+                  for monitor_line in $monitor_lines; do
+                    # Search backwards from label to find the service name
+                    service_name=$(sed -n "${services_line},${monitor_line}p" "$compose_file" | grep "^  [a-z][a-z0-9_-]*:$" | tail -1 | sed 's/://g' | xargs)
+
+                    if [ -n "$service_name" ]; then
+                      # Find container_name for this service
+                      container_name=$(grep -A 20 "^  $service_name:" "$compose_file" | grep "container_name:" | head -1 | awk '{print $2}')
+
+                      if [ -n "$container_name" ] && [ "$container_name" != "null" ]; then
+                        COMPOSE_MAP["$container_name"]="$compose_file"
+                        SERVICE_MAP["$container_name"]="$service_name"
+                        echo "Registered (bootstrap): $container_name -> $compose_file (service: $service_name)"
+                      fi
+                    fi
+                  done
+                fi
+              fi
+            done
+          else
+            echo "=== NORMAL MODE: Building maps from running container labels ==="
+            # Query Docker API for all containers with ha.monitor=true
+            containers_json=$(curl -s http://localhost:2375/containers/json?all=true)
+
+            # Parse JSON and build maps
+            while IFS= read -r line; do
+              container_name=$(echo "$line" | jq -r '.name')
+              compose_file=$(echo "$line" | jq -r '.compose_file')
+              service_name=$(echo "$line" | jq -r '.service_name')
+
+              if [ -n "$container_name" ] && [ "$container_name" != "null" ]; then
+                COMPOSE_MAP["$container_name"]="$compose_file"
+                SERVICE_MAP["$container_name"]="$service_name"
+                echo "Registered: $container_name -> $compose_file (service: $service_name)"
+              fi
+            done < <(echo "$containers_json" | jq -c '.[] | select(.Labels["ha.monitor"] == "true") | {name: .Names[0] | ltrimstr("/"), compose_file: .Labels["ha.compose-file"], service_name: .Labels["ha.service-name"]}')
+          fi
+
+          updated=""
+
+          if [ "$BOOTSTRAP" = "true" ]; then
+            # Bootstrap mode: recreate ALL containers from compose files to apply labels
+            echo "=== BOOTSTRAP: Will recreate all containers to apply labels ==="
+            CONTAINERS=$(IFS=,; echo "${!COMPOSE_MAP[*]}")
+            echo "Containers to bootstrap: $CONTAINERS"
+          elif [ "$CONTAINERS" = "all" ]; then
+            # Check all and update those with available updates
+            chmod +x ./scripts/check-docker-updates.sh
+            CONTAINERS=""
+            for container in "${!COMPOSE_MAP[@]}"; do
+              if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                echo "Checking $container..."
+                result=$(./scripts/check-docker-updates.sh "$container" 2>/dev/null)
+                # Script outputs JSON object starting with { if update available
+                if [ -n "$result" ] && [[ "$result" == "{"* ]]; then
+                  echo "  -> Update available"
+                  if [ -z "$CONTAINERS" ]; then
+                    CONTAINERS="$container"
+                  else
+                    CONTAINERS="${CONTAINERS},${container}"
+                  fi
+                else
+                  echo "  -> No update"
+                fi
+              fi
+            done
+            echo "Containers to update: $CONTAINERS"
+          fi
+
+          if [ -z "$CONTAINERS" ]; then
+            echo "No containers need updating"
+            exit 0
+          fi
+
+          # Update each container
+          IFS=',' read -ra CONTAINER_LIST <<< "$CONTAINERS"
+          for container in "${CONTAINER_LIST[@]}"; do
+            container=$(echo "$container" | xargs)  # trim whitespace
+            compose_file="${COMPOSE_MAP[$container]}"
+            service_name="${SERVICE_MAP[$container]}"
+
+            if [ -n "$compose_file" ] && [ -f "$compose_file" ]; then
+              echo "Updating container $container (service: $service_name) using $compose_file"
+
+              # Pull new image
+              image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+              if [ -n "$image" ]; then
+                docker pull "$image"
+              fi
+
+              # Stop and remove old container to avoid name conflicts
+              docker stop "$container" 2>/dev/null || true
+              docker rm "$container" 2>/dev/null || true
+
+              # Recreate container using service name
+              cd "$(dirname "$compose_file")"
+              docker compose -f "$(basename "$compose_file")" up -d "$service_name" || true
+              cd - > /dev/null
+
+              updated="${updated}${container}, "
+            else
+              echo "Warning: No compose file mapped for $container"
+            fi
+          done
+
+          echo "Updated containers: ${updated%, }"
+
+      - name: Wait for services to stabilize
+        run: sleep 15
+
+      - name: Notify Home Assistant of completion
+        continue-on-error: true
+        env:
+          HA_URL: ${{ vars.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_LONG_LIVED_TOKEN }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+          UPDATED: ${{ env.updated }}
+        run: |
+          # Use the actually updated containers if available, otherwise the input
+          containers_list="${UPDATED:-${CONTAINERS}}"
+
+          # Build payload with jq for proper JSON
+          payload=$(jq -n \
+            --arg host "docker-critical" \
+            --arg containers "$containers_list" \
+            '{host: $host, containers: $containers}')
+
+          echo "Sending payload: $payload"
+
+          # Retry up to 3 times with 10 second delay
+          for i in 1 2 3; do
+            if curl -s --fail --max-time 30 -X POST \
+              -H "Authorization: Bearer ${HA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$payload" \
+              "${HA_URL}/api/events/docker_updates_applied"; then
+              echo "Successfully notified Home Assistant"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Failed to notify Home Assistant after 3 attempts"

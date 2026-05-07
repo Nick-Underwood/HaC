@@ -1,0 +1,52 @@
+name: Deploy Uptime Kuma
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Management/UptimeKuma/**"
+      - ".forgejo/workflows/deploy-uptime-kuma.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Management/UptimeKuma/uptime-kuma.yml"
+
+      - name: Create data directories
+        run: |
+          sudo mkdir -p /srv/uptime-kuma/data
+          sudo chown -R 1000:1000 /srv/uptime-kuma
+
+      - name: Deploy Uptime Kuma
+        working-directory: "./Docker-Critical/Management/UptimeKuma"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+        run: |
+          defined_image=$(grep -m1 'image:' uptime-kuma.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' uptime-kuma 2>/dev/null || echo "none")
+          checksum=$(sha256sum uptime-kuma.yml | awk '{print $1}')
+          old=$(cat /srv/uptime-kuma/.uptime-kuma_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Uptime Kuma..."
+            docker compose -p uptime-kuma -f uptime-kuma.yml down --remove-orphans || true
+            docker compose -p uptime-kuma -f uptime-kuma.yml up -d --force-recreate
+            echo "$checksum" | sudo tee /srv/uptime-kuma/.uptime-kuma_checksum > /dev/null
+            docker logs uptime-kuma --tail 20
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

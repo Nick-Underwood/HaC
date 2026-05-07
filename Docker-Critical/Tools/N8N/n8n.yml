@@ -1,0 +1,118 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - N8N_HOST=n8n.${DOMAIN_NAME}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.${DOMAIN_NAME}/
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres-n8n
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD}
+      - N8N_REDIS_HOST=redis-n8n
+      - N8N_REDIS_PORT=6379
+      - N8N_EXPRESS_TRUST_PROXY=true
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/N8N/n8n.yml
+      - ha.service-name=n8n
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.n8n.entrypoints=websecure
+      - traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN_NAME}`)
+      - traefik.http.routers.n8n.service=n8n
+      - traefik.http.services.n8n.loadbalancer.server.port=5678
+      - traefik.http.routers.n8n.tls.certresolver=${CERTRESOLVER}
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/n8n:/home/node/.n8n
+
+  postgres-n8n:
+    image: postgres:15
+    container_name: postgres-n8n
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+          cpus: '0.2'
+
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=${N8N_DB_PASSWORD}
+      - POSTGRES_DB=n8n
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/N8N/n8n.yml
+      - ha.service-name=postgres-n8n
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/postgres-n8n:/var/lib/postgresql/data
+
+  redis-n8n:
+    image: redis:7
+    container_name: redis-n8n
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/N8N/n8n.yml
+      - ha.service-name=redis-n8n
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/redis-n8n:/data

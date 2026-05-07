@@ -1,0 +1,316 @@
+name: Deploy MCP Servers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "Docker-NonCritical/Automation/AI/MCPGateway/mcp-servers/**"
+      - ".forgejo/workflows/deploy-mcpservers.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: |
+          ls -l "./Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+
+      - name: Deploy MCP Servers
+        working-directory: "./Docker-NonCritical/Automation/AI/MCPGateway"
+        env:
+          VIKUNJA_URL: ${{ vars.VIKUNJA_URL }}
+          VIKUNJA_API_TOKEN: ${{ secrets.VIKUNJA_API_TOKEN }}
+          N8N_URL: ${{ vars.N8N_URL }}
+          N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+          N8N_MCP_AUTH_TOKEN: ${{ secrets.N8N_MCP_AUTH_TOKEN }}
+          HOMEBOX_URL: ${{ vars.HOMEBOX_URL }}
+          HOMEBOX_EMAIL: ${{ secrets.HOMEBOX_EMAIL }}
+          HOMEBOX_PASSWORD: ${{ secrets.HOMEBOX_PASSWORD }}
+          FORGEJO_URL: ${{ vars.FORGEJO_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          DOCKHAND_URL: ${{ vars.DOCKHAND_URL }}
+          DOCKHAND_USERNAME: ${{ secrets.DOCKHAND_MCP_USERNAME }}
+          DOCKHAND_PASSWORD: ${{ secrets.DOCKHAND_MCP_PASSWORD }}
+          OMADA_URL: ${{ vars.OMADA_URL }}
+          OMADA_USERNAME: ${{ secrets.OMADA_USERNAME }}
+          OMADA_PASSWORD: ${{ secrets.OMADA_PASSWORD }}
+          OMADA_SITE_ID: ${{ vars.OMADA_SITE_ID }}
+          MCP_GATEWAY_BOOTSTRAP_SUB: ${{ vars.MCP_GATEWAY_BOOTSTRAP_SUB }}
+        run: |
+          # Validate required secrets
+          for var in VIKUNJA_API_TOKEN N8N_API_KEY N8N_MCP_AUTH_TOKEN HOMEBOX_EMAIL HOMEBOX_PASSWORD DOCKHAND_USERNAME DOCKHAND_PASSWORD FORGEJO_TOKEN OMADA_USERNAME OMADA_PASSWORD; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required secret: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Validate required vars
+          for var in VIKUNJA_URL N8N_URL HOMEBOX_URL DOCKHAND_URL FORGEJO_URL OMADA_URL; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Compute checksum of compose file + custom server source files
+          checksum=$(cat mcpservers.yml \
+            mcp-servers/homebox/Dockerfile \
+            mcp-servers/homebox/index.js \
+            mcp-servers/homebox/package.json \
+            mcp-servers/dockhand/Dockerfile \
+            mcp-servers/dockhand/index.js \
+            mcp-servers/dockhand/package.json \
+            mcp-servers/forgejo/Dockerfile \
+            mcp-servers/omada/Dockerfile \
+            mcp-servers/omada/index.js \
+            mcp-servers/omada/package.json \
+            | sha256sum | awk '{print $1}')
+          old=$(cat .mcpservers_checksum 2>/dev/null || echo "")
+
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$checksum" != "$old" ]; then
+            echo "Redeploying MCP Servers"
+
+            # Build custom images and deploy
+            docker compose -p mcpservers -f mcpservers.yml up -d --build --force-recreate --remove-orphans
+
+            # Save checksum
+            echo "$checksum" > .mcpservers_checksum
+          else
+            echo "No redeploy needed"
+          fi
+
+          # Register MCP upstreams inside ContextForge so Admin UI can load server choices
+          if [ -z "$MCP_GATEWAY_BOOTSTRAP_SUB" ]; then
+            MCP_GATEWAY_BOOTSTRAP_SUB="nicholas@u-acres.com"
+          fi
+
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:4444/health >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" -eq 10 ]; then
+              echo "ContextForge gateway not reachable on http://127.0.0.1:4444" >&2
+              exit 1
+            fi
+            sleep 3
+          done
+
+          # Mint token using the secret from inside the running container to avoid secret drift
+          MCP_GATEWAY_TOKEN=$(docker exec mcp-gateway sh -lc "python3 -m mcpgateway.utils.create_jwt_token --username '$MCP_GATEWAY_BOOTSTRAP_SUB' --admin --exp 10080 --secret \"\$JWT_SECRET_KEY\" 2>/dev/null | head -1")
+
+          if [ -z "$MCP_GATEWAY_TOKEN" ]; then
+            echo "Failed to generate MCP gateway token" >&2
+            exit 1
+          fi
+
+          curl_http_code() {
+            output_file="$1"
+            shift
+
+            code=$(curl -sS -o "$output_file" -w "%{http_code}" "$@" || true)
+            if [ -z "$code" ]; then
+              code="000"
+            fi
+
+            printf '%s' "$code"
+          }
+
+          token_check_code=$(curl_http_code /tmp/mcpgateway_token_check.json \
+            -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+            "http://127.0.0.1:4444/version")
+
+          if [ "$token_check_code" != "200" ]; then
+            echo "Bootstrap token rejected by ContextForge (HTTP $token_check_code) for subject '$MCP_GATEWAY_BOOTSTRAP_SUB'" >&2
+            cat /tmp/mcpgateway_token_check.json >&2 || true
+            echo "Set Forgejo variable MCP_GATEWAY_BOOTSTRAP_SUB to an existing ContextForge admin user email if needed." >&2
+            exit 1
+          fi
+
+          register_gateway() {
+            name="$1"
+            url="$2"
+            description="$3"
+            upstream_bearer_token="$4"
+
+            attempt=1
+            while [ "$attempt" -le 20 ]; do
+              if [ -n "$upstream_bearer_token" ]; then
+                # Compatibility fallback chain for authenticated upstreams across ContextForge versions.
+                payload1=$(printf '{"name":"%s","url":"%s","description":"%s","transport":"STREAMABLEHTTP","request_type":"STREAMABLEHTTP","auth_type":"authheaders","auth_header_key":"Authorization","auth_header_value":"Bearer %s"}' "$name" "$url" "$description" "$upstream_bearer_token")
+                payload2=$(printf '{"name":"%s","url":"%s","description":"%s","transport":"STREAMABLEHTTP","request_type":"STREAMABLEHTTP","auth_type":"authheaders","auth_headers":[{"key":"Authorization","value":"Bearer %s"}]}' "$name" "$url" "$description" "$upstream_bearer_token")
+                payload3=$(printf '{"gateway":{"name":"%s","url":"%s","description":"%s","transport":"STREAMABLEHTTP","request_type":"STREAMABLEHTTP","auth_type":"authheaders","auth_headers":[{"key":"Authorization","value":"Bearer %s"}]}}' "$name" "$url" "$description" "$upstream_bearer_token")
+
+                http_code=$(curl_http_code /tmp/gateway_register_resp.json \
+                  -X POST "http://127.0.0.1:4444/admin/gateways" \
+                  -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$payload1")
+
+                if [ "$http_code" = "422" ]; then
+                  http_code=$(curl_http_code /tmp/gateway_register_resp.json \
+                    -X POST "http://127.0.0.1:4444/admin/gateways" \
+                    -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                    -H "Content-Type: application/json" \
+                    -d "$payload2")
+                fi
+
+                if [ "$http_code" = "422" ]; then
+                  http_code=$(curl_http_code /tmp/gateway_register_resp.json \
+                    -X POST "http://127.0.0.1:4444/admin/gateways" \
+                    -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                    -H "Content-Type: application/json" \
+                    -d "$payload3")
+                fi
+              else
+                payload=$(printf '{"name":"%s","url":"%s","description":"%s","transport":"STREAMABLEHTTP","request_type":"STREAMABLEHTTP"}' "$name" "$url" "$description")
+
+                http_code=$(curl_http_code /tmp/gateway_register_resp.json \
+                  -X POST "http://127.0.0.1:4444/gateways" \
+                  -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$payload")
+              fi
+
+              if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "409" ]; then
+                echo "Gateway ensured: $name ($http_code)"
+                return 0
+              fi
+
+              if [ "$http_code" = "000" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
+                echo "Gateway not ready yet for $name ($http_code), retry $attempt/20"
+                attempt=$((attempt + 1))
+                sleep 3
+                continue
+              fi
+
+              echo "Failed to register gateway $name (HTTP $http_code)" >&2
+              cat /tmp/gateway_register_resp.json >&2 || true
+              return 1
+            done
+
+            echo "Failed to register gateway $name after retries" >&2
+            cat /tmp/gateway_register_resp.json >&2 || true
+            return 1
+          }
+
+          delete_gateway_by_name() {
+            name="$1"
+
+            # Prefer admin endpoint for cleanup because /gateways can be unstable when a bad record exists.
+            list_code=$(curl_http_code /tmp/gateway_list_resp.json \
+              -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+              "http://127.0.0.1:4444/admin/gateways?page=1&per_page=500")
+
+            if [ "$list_code" != "200" ]; then
+              list_code=$(curl_http_code /tmp/gateway_list_resp.json \
+                -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                "http://127.0.0.1:4444/gateways?include_pagination=true&limit=500")
+            fi
+
+            if [ "$list_code" != "200" ]; then
+              echo "Could not list gateways to clean stale entry for $name (HTTP $list_code)"
+              return 0
+            fi
+
+            gateway_id=$(python3 -c "import json,sys; name=sys.argv[1]; data=json.load(open('/tmp/gateway_list_resp.json','r',encoding='utf-8')); gateways=data.get('data', data.get('gateways', data if isinstance(data, list) else [])); match=next((g.get('id','') for g in gateways if isinstance(g, dict) and g.get('name')==name), ''); print(match)" "$name")
+
+            if [ -n "$gateway_id" ]; then
+              del_code=$(curl_http_code /tmp/gateway_delete_resp.json \
+                -X DELETE \
+                -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                "http://127.0.0.1:4444/gateways/$gateway_id")
+
+              if [ "$del_code" = "200" ] || [ "$del_code" = "204" ] || [ "$del_code" = "404" ]; then
+                echo "Removed stale gateway entry: $name ($gateway_id)"
+              else
+                echo "Warning: failed to remove stale gateway $name ($gateway_id), HTTP $del_code"
+              fi
+            else
+              echo "No stale gateway entry found for $name"
+            fi
+
+            return 0
+          }
+
+          failed_gateways=""
+
+          ensure_gateway() {
+            name="$1"
+            url="$2"
+            description="$3"
+            upstream_bearer_token="$4"
+
+            delete_gateway_by_name "$name"
+
+            if ! register_gateway "$name" "$url" "$description" "$upstream_bearer_token"; then
+              echo "Warning: skipping unavailable gateway $name"
+              delete_gateway_by_name "$name"
+              failed_gateways="$failed_gateways $name"
+            fi
+          }
+
+          ensure_gateway "vikunja-mcp" "http://mcp-vikunja:3000/mcp" "Vikunja MCP server"
+          ensure_gateway "homebox-mcp" "http://mcp-homebox:3000/mcp" "HomeBox MCP server"
+          ensure_gateway "dockhand-mcp" "http://mcp-dockhand:3000/mcp" "Dockhand MCP server"
+          ensure_gateway "forgejo-mcp" "http://mcp-forgejo:3000/mcp" "Forgejo MCP server"
+          ensure_gateway "n8n-mcp" "http://n8n-mcp:3000/mcp" "n8n MCP server" "$N8N_MCP_AUTH_TOKEN"
+          ensure_gateway "omada-mcp" "http://mcp-omada:3000/mcp" "Omada MCP server"
+
+          if [ -n "$failed_gateways" ]; then
+            echo "Gateway registration warnings:$failed_gateways"
+          fi
+
+          # Smoke-test the endpoints used by the Admin UI MCP server picker
+          endpoint_warnings=""
+
+          check_endpoint() {
+            path="$1"
+            attempt=1
+            while [ "$attempt" -le 10 ]; do
+              code=$(curl_http_code /tmp/mcpgateway_endpoint_resp.json \
+                -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+                "http://127.0.0.1:4444$path")
+
+              if [ "$code" = "200" ]; then
+                echo "Endpoint OK: $path"
+                return 0
+              fi
+
+              if [ "$code" = "000" ] || [ "$code" = "500" ] || [ "$code" = "502" ] || [ "$code" = "503" ] || [ "$code" = "504" ]; then
+                echo "Endpoint not ready yet: $path (HTTP $code), retry $attempt/10"
+                attempt=$((attempt + 1))
+                sleep 2
+                continue
+              fi
+
+              break
+            done
+
+            echo "Warning: endpoint check failed: $path (HTTP $code)" >&2
+            cat /tmp/mcpgateway_endpoint_resp.json >&2 || true
+            endpoint_warnings="$endpoint_warnings $path"
+            return 0
+          }
+
+          check_endpoint "/gateways?include_pagination=true&limit=50"
+          check_endpoint "/admin/gateways?page=1&per_page=50"
+
+          if [ -n "$endpoint_warnings" ]; then
+            echo "ContextForge endpoint warnings:$endpoint_warnings"
+          fi

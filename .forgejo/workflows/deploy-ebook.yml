@@ -1,0 +1,68 @@
+name: Deploy eBook Services
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Media/Books/**"
+      - ".forgejo/workflows/deploy-ebook.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Media/Books/ebook.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Media/Books"
+        env:
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          # Extract defined images
+          defined_audiobookshelf=$(grep -m1 'image:.*audiobookshelf' ebook.yml | awk '{print $2}')
+          defined_kavita=$(grep -m1 'image:.*kavita' ebook.yml | awk '{print $2}')
+
+          # Extract running images
+          running_audiobookshelf=$(docker inspect -f '{{.Config.Image}}' audiobookshelf 2>/dev/null || echo "none")
+          running_kavita=$(docker inspect -f '{{.Config.Image}}' kavita 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum ebook.yml | awk '{print $1}')
+          old=$(cat .ebook_checksum 2>/dev/null || echo "")
+
+          echo "Defined audiobookshelf: $defined_audiobookshelf"
+          echo "Running audiobookshelf: $running_audiobookshelf"
+          echo "Defined kavita: $defined_kavita"
+          echo "Running kavita: $running_kavita"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_audiobookshelf" != "$running_audiobookshelf" ] || \
+             [ "$defined_kavita" != "$running_kavita" ] || \
+             [ "$checksum" != "$old" ]; then
+            echo "Redeploying eBook Services"
+
+            # Deploy
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p ebook -f ebook.yml down --remove-orphans || true
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p ebook -f ebook.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .ebook_checksum
+          else
+            echo "No redeploy needed"
+          fi

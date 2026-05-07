@@ -1,0 +1,97 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  vikunja:
+    image: vikunja/vikunja:latest
+    container_name: vikunja
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    environment:
+      - VIKUNJA_SERVICE_PUBLICURL=https://tasks.${DOMAIN_NAME}
+      - VIKUNJA_SERVICE_ENABLECALDAV=true
+      - VIKUNJA_SERVICE_ENABLEREGISTRATION=false
+      - VIKUNJA_DATABASE_TYPE=postgres
+      - VIKUNJA_DATABASE_HOST=vikunja-db
+      - VIKUNJA_DATABASE_USER=vikunja
+      - VIKUNJA_DATABASE_PASSWORD=${VIKUNJA_DB_PASSWORD}
+      - VIKUNJA_DATABASE_DATABASE=vikunja
+      - VIKUNJA_SERVICE_JWTSECRET=${VIKUNJA_JWT_SECRET}
+      - VIKUNJA_MAILER_ENABLED=false
+      - TZ=${TZ:-America/Chicago}
+
+    labels:
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.vikunja.entrypoints=websecure
+      - traefik.http.routers.vikunja.rule=Host(`tasks.${DOMAIN_NAME}`)
+      - traefik.http.routers.vikunja.service=vikunja
+      - traefik.http.services.vikunja.loadbalancer.server.port=3456
+      - traefik.http.routers.vikunja.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.vikunja.tls.domains[0].main=tasks.${DOMAIN_NAME}
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/Vikunja/vikunja.yml
+      - ha.service-name=vikunja
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/vikunja/files:/app/vikunja/files
+
+    depends_on:
+      vikunja-db:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["NONE"]
+
+  vikunja-db:
+    image: postgres:15
+    container_name: vikunja-db
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+          cpus: '0.2'
+
+    environment:
+      - POSTGRES_USER=vikunja
+      - POSTGRES_PASSWORD=${VIKUNJA_DB_PASSWORD}
+      - POSTGRES_DB=vikunja
+
+    labels:
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/Vikunja/vikunja.yml
+      - ha.service-name=vikunja-db
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/vikunja/postgres:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d vikunja -U vikunja"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

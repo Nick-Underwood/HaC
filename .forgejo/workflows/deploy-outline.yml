@@ -1,0 +1,66 @@
+name: Deploy Outline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Tools/Outline/outline.yml"
+      - ".forgejo/workflows/deploy-outline.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Tools/Outline/outline.yml"
+
+      - name: Deploy Outline
+        working-directory: "./Docker-Critical/Tools/Outline"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          OUTLINE_SECRET_KEY: ${{ secrets.OUTLINE_SECRET_KEY }}
+          OUTLINE_UTILS_SECRET: ${{ secrets.OUTLINE_UTILS_SECRET }}
+          OUTLINE_DB_PASSWORD: ${{ secrets.OUTLINE_DB_PASSWORD }}
+          OUTLINE_MINIO_ACCESS_KEY: ${{ secrets.OUTLINE_MINIO_ACCESS_KEY }}
+          OUTLINE_MINIO_SECRET_KEY: ${{ secrets.OUTLINE_MINIO_SECRET_KEY }}
+          OUTLINE_OIDC_CLIENT_ID: ${{ secrets.OUTLINE_OIDC_CLIENT_ID }}
+          OUTLINE_OIDC_CLIENT_SECRET: ${{ secrets.OUTLINE_OIDC_CLIENT_SECRET }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER OUTLINE_SECRET_KEY OUTLINE_UTILS_SECRET OUTLINE_DB_PASSWORD OUTLINE_MINIO_ACCESS_KEY OUTLINE_MINIO_SECRET_KEY OUTLINE_OIDC_CLIENT_ID OUTLINE_OIDC_CLIENT_SECRET; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # URL-encode the DB password so special chars (#, @, %) don't break the connection URL
+          ENCODED_DB_PW=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$OUTLINE_DB_PASSWORD")
+          export OUTLINE_DATABASE_URL="postgres://outline:${ENCODED_DB_PW}@postgres-outline:5432/outline"
+
+          defined_image=$(grep -m1 'image:.*outline' outline.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' outline 2>/dev/null || echo "none")
+          checksum=$(sha256sum outline.yml | awk '{print $1}')
+          old=$(cat ~/.hac-critical/.outline_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Outline..."
+            mkdir -p ~/.hac-critical
+            sudo mkdir -p /srv/postgres-outline /srv/redis-outline /srv/minio-outline /srv/outline
+
+            docker compose -p outline down --remove-orphans || true
+            docker compose -p outline -f outline.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-critical/.outline_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

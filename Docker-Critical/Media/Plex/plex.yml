@@ -1,0 +1,51 @@
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - VERSION=docker
+      - PLEX_CLAIM=${PLEX_CLAIM}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.plex.entrypoints=websecure
+      - traefik.http.routers.plex.rule=Host(`plex.${DOMAIN_NAME}`)
+      - traefik.http.routers.plex.service=plex
+      - traefik.http.routers.plex.tls=true
+      - traefik.http.routers.plex.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.plex.tls.domains[0].main=plex.${DOMAIN_NAME}
+      - traefik.http.services.plex.loadbalancer.server.port=32400
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-Critical/Media/Plex/plex.yml"
+      - "ha.service-name=plex"
+    volumes:
+      - /srv/plex/config:/config
+      - /mnt/data/media/movies:/movies
+      - /mnt/data/media/tv:/tv
+      - /mnt/data/media/music:/music
+    ports:
+      - "32400:32400/tcp"
+      - "3005:3005/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+      - "1900:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:32400/web/index.html"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  mediaproxy:
+    external: true

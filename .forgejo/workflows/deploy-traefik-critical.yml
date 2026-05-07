@@ -1,0 +1,70 @@
+name: Deploy Traefik
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Networking/Proxy/proxy.yml"
+      - ".forgejo/workflows/deploy-traefik-critical.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Networking/Proxy/proxy.yml"
+
+      - name: Deploy Traefik
+        working-directory: "./Docker-Critical/Networking/Proxy"
+        env:
+          CLOUDFLARE_EMAIL: ${{ vars.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+          CLOUDFLARE_ZONE_API_TOKEN: ${{ secrets.CLOUDFLARE_ZONE_API_TOKEN }}
+          LETS_ENCRYPT_EMAIL: ${{ vars.LETS_ENCRYPT_EMAIL }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+        run: |
+          # Validate required vars
+          for var in CLOUDFLARE_EMAIL CLOUDFLARE_DNS_API_TOKEN CLOUDFLARE_ZONE_API_TOKEN LETS_ENCRYPT_EMAIL DOMAIN_NAME TZ; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' proxy.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' traefik 2>/dev/null || echo "none")
+          checksum=$(sha256sum proxy.yml | awk '{print $1}')
+          old=$(cat /srv/traefik/.traefik_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Traefik..."
+            sudo mkdir -p /srv/traefik
+            sudo cp proxy.yml /srv/traefik/
+            sudo chmod 644 /srv/traefik/proxy.yml
+            
+            # Ensure acme.json exists with correct permissions
+            sudo touch /srv/traefik/acme.json
+            sudo chmod 600 /srv/traefik/acme.json
+            
+            cd /srv/traefik
+            docker compose -p proxy -f proxy.yml up -d --force-recreate
+            echo "$checksum" | sudo tee /srv/traefik/.traefik_checksum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

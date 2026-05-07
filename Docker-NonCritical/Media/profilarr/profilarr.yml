@@ -1,0 +1,30 @@
+services:
+  profilarr:
+    image: santiagosayshey/profilarr:latest
+    container_name: profilarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - PROFILARR_PAT=${PROFILARR_PAT}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.profilarr.entrypoints=websecure
+      - traefik.http.routers.profilarr.rule=Host(`profilarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.profilarr.service=profilarr
+      - traefik.http.services.profilarr.loadbalancer.server.port=6868
+      - traefik.http.routers.profilarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.profilarr.tls.domains[0].main=profilarr.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/profilarr/profilarr.yml"
+      - "ha.service-name=profilarr"
+    volumes:
+      - /srv/profilarr/config:/config
+
+networks:
+  mediaproxy:
+    external: true

@@ -1,0 +1,47 @@
+name: Deploy Cloudflared
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Networking/Cloudflared/**"
+      - ".forgejo/workflows/deploy-cloudflared.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Cloudflared
+        env:
+          TZ: ${{ vars.TZ }}
+          HA_CF_TUNNEL_TOKEN: ${{ secrets.HA_CF_TUNNEL_TOKEN }}
+        run: |
+          defined_image=$(grep -m1 'image:' Docker-Critical/Networking/Cloudflared/cloudflared.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' cloudflared 2>/dev/null || echo "none")
+          checksum=$(sha256sum Docker-Critical/Networking/Cloudflared/cloudflared.yml | awk '{print $1}')
+          old=$(cat /srv/cloudflared/.cloudflared_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Cloudflared..."
+            sudo mkdir -p /srv/cloudflared
+            sudo cp Docker-Critical/Networking/Cloudflared/cloudflared.yml /srv/cloudflared/
+            sudo chmod 644 /srv/cloudflared/cloudflared.yml
+
+            cd /srv/cloudflared
+            TZ=${TZ:-America/Chicago} \
+            HA_CF_TUNNEL_TOKEN=$HA_CF_TUNNEL_TOKEN \
+            docker compose -p cloudflared -f cloudflared.yml up -d --force-recreate
+
+            echo "$checksum" | sudo tee /srv/cloudflared/.cloudflared_checksum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

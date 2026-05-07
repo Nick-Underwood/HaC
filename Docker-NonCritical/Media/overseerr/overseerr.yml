@@ -1,0 +1,25 @@
+services:
+  overseerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: overseerr
+    restart: unless-stopped
+    init: true
+    networks:
+      - mediaproxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.overseerr.entrypoints=websecure
+      - traefik.http.routers.overseerr.rule=Host(`request.${DOMAIN_NAME}`)
+      - traefik.http.routers.overseerr.service=overseerr
+      - traefik.http.services.overseerr.loadbalancer.server.port=5055
+      - traefik.http.routers.overseerr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.overseerr.tls.domains[0].main=request.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/overseerr/overseerr.yml"
+      - "ha.service-name=overseerr"
+    volumes:
+      - /srv/overseerr/config:/app/config
+networks:
+  mediaproxy:
+    external: true

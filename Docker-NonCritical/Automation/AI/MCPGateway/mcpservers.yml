@@ -1,0 +1,188 @@
+services:
+  # Vikunja MCP Server (task management)
+  vikunja-mcp:
+    image: node:20-alpine
+    container_name: mcp-vikunja
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+    networks:
+      - mcpnet
+    working_dir: /app
+    # Use the lighter vikunja-mcp package here because the previous package
+    # fails ContextForge gateway initialization with schema parsing errors.
+    command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'npx -y vikunja-mcp'"
+    environment:
+      # Compatibility: different Vikunja MCP packages use different env var names.
+      - VIKUNJA_API_BASE=${VIKUNJA_URL}
+      - VIKUNJA_URL=${VIKUNJA_URL}
+      - VIKUNJA_API_TOKEN=${VIKUNJA_API_TOKEN}
+      - NODE_OPTIONS=--max-old-space-size=512
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=vikunja-mcp"
+
+  # HomeBox MCP Server (inventory management)
+  homebox-mcp:
+    build:
+      context: ./mcp-servers/homebox
+      dockerfile: Dockerfile
+    container_name: mcp-homebox
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - mcpnet
+    working_dir: /app
+    command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'node index.js'"
+    environment:
+      - HOMEBOX_URL=${HOMEBOX_URL}
+      - HOMEBOX_EMAIL=${HOMEBOX_EMAIL}
+      - HOMEBOX_PASSWORD=${HOMEBOX_PASSWORD}
+      - NODE_OPTIONS=--max-old-space-size=384
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=homebox-mcp"
+
+  # OPNsense MCP Server — disabled: @pixelworlds/opnsense-mcp-server does not exist on npm
+  # Find a valid package or build from source before re-enabling
+  # opnsense-mcp:
+  #   image: node:20-alpine
+  #   container_name: mcp-opnsense
+  #   restart: unless-stopped
+  #   networks:
+  #     - mcpnet
+  #   working_dir: /app
+  #   command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'npx -y @pixelworlds/opnsense-mcp-server'"
+  #   environment:
+  #     - OPNSENSE_URL=${OPNSENSE_URL}
+  #     - OPNSENSE_API_KEY=${OPNSENSE_API_KEY}
+  #     - OPNSENSE_API_SECRET=${OPNSENSE_API_SECRET}
+  #   labels:
+  #     - com.centurylinklabs.watchtower.enable=false
+  #     - "ha.monitor=true"
+  #     - "ha.category=tools"
+  #     - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+  #     - "ha.service-name=opnsense-mcp"
+
+  # NetBox MCP Server — disabled: @netboxlabs/netbox-mcp-server does not exist on npm
+  # Find the correct package name before re-enabling
+  # netbox-mcp:
+  #   image: node:20-alpine
+  #   container_name: mcp-netbox
+  #   restart: unless-stopped
+  #   networks:
+  #     - mcpnet
+  #   working_dir: /app
+  #   command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'npx -y @netboxlabs/netbox-mcp-server'"
+  #   environment:
+  #     - NETBOX_URL=${NETBOX_URL}
+  #     - NETBOX_API_TOKEN=${NETBOX_API_TOKEN}
+  #   labels:
+  #     - com.centurylinklabs.watchtower.enable=false
+  #     - "ha.monitor=true"
+  #     - "ha.category=tools"
+  #     - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+  #     - "ha.service-name=netbox-mcp"
+
+  # Forgejo MCP Server — issues, PRs, files, branches, actions, notifications
+  forgejo-mcp:
+    build:
+      context: ./mcp-servers/forgejo
+      dockerfile: Dockerfile
+    container_name: mcp-forgejo
+    restart: unless-stopped
+    networks:
+      - mcpnet
+    environment:
+      - FORGEJO_URL=${FORGEJO_URL}
+      - FORGEJO_ACCESS_TOKEN=${FORGEJO_TOKEN}
+      - FORGEJO_USER_AGENT=forgejo-mcp/2.17.0
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=forgejo-mcp"
+
+  # Dockhand MCP Server — Docker container and stack management via Dockhand API
+  dockhand-mcp:
+    build:
+      context: ./mcp-servers/dockhand
+      dockerfile: Dockerfile
+    container_name: mcp-dockhand
+    restart: unless-stopped
+    networks:
+      - mcpnet
+    command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'node index.js'"
+    mem_limit: 512m
+    cpus: 0.5
+    environment:
+      - DOCKHAND_URL=${DOCKHAND_URL}
+      - DOCKHAND_USERNAME=${DOCKHAND_USERNAME}
+      - DOCKHAND_PASSWORD=${DOCKHAND_PASSWORD}
+      - NODE_OPTIONS=--max-old-space-size=384
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=dockhand-mcp"
+
+  # n8n MCP Server — allows AI to list/create/manage N8N workflows
+  n8n-mcp:
+    image: ghcr.io/czlonkowski/n8n-mcp:latest
+    container_name: n8n-mcp
+    restart: unless-stopped
+    networks:
+      - mcpnet
+    environment:
+      - N8N_API_URL=${N8N_URL}/api/v1
+      - N8N_API_KEY=${N8N_API_KEY}
+      - MCP_MODE=http
+      - PORT=3000
+      - HOST=0.0.0.0
+      - AUTH_TOKEN=${N8N_MCP_AUTH_TOKEN}
+      - AUTH_RATE_LIMIT_MAX=1000
+      - AUTH_RATE_LIMIT_WINDOW=60000
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=n8n-mcp"
+
+  # Omada MCP Server — network device/client management via Omada SDN API
+  omada-mcp:
+    build:
+      context: ./mcp-servers/omada
+      dockerfile: Dockerfile
+    container_name: mcp-omada
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - mcpnet
+    working_dir: /app
+    command: sh -c "npx -y supergateway --port 3000 --outputTransport streamableHttp --stdio 'node index.js'"
+    environment:
+      - OMADA_URL=${OMADA_URL}
+      - OMADA_USERNAME=${OMADA_USERNAME}
+      - OMADA_PASSWORD=${OMADA_PASSWORD}
+      - OMADA_SITE_ID=${OMADA_SITE_ID:-Default}
+      - NODE_OPTIONS=--max-old-space-size=384
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpservers.yml"
+      - "ha.service-name=omada-mcp"
+
+networks:
+  mcpnet:
+    name: mcpnet
+    external: true

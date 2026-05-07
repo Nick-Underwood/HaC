@@ -1,0 +1,75 @@
+networks:
+  toolsproxy:
+    external: true
+
+volumes:
+  gardenplanner_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/gardenplanner/data
+
+services:
+  gardenplanner-api:
+    image: git.${DOMAIN_NAME}/nicholas/garden-api:latest
+    container_name: gardenplanner-api
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_PATH: /data/garden.db
+      API_KEY: ${GARDEN_API_KEY}
+      TZ: ${TZ}
+
+    volumes:
+      - gardenplanner_data:/data
+
+    labels:
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/GardenPlanner/gardenplanner.yml
+      - ha.service-name=gardenplanner-api
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    networks:
+      - toolsproxy
+
+  gardenplanner:
+    image: git.${DOMAIN_NAME}/nicholas/garden-web:latest
+    container_name: gardenplanner
+    restart: unless-stopped
+
+    depends_on:
+      - gardenplanner-api
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/GardenPlanner/gardenplanner.yml
+      - ha.service-name=gardenplanner
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.gardenplanner.entrypoints=websecure
+      - traefik.http.routers.gardenplanner.rule=Host(`garden.${DOMAIN_NAME}`)
+      - traefik.http.routers.gardenplanner.service=gardenplanner
+      - traefik.http.services.gardenplanner.loadbalancer.server.port=80
+      - traefik.http.routers.gardenplanner.tls.certresolver=${CERTRESOLVER}
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/index.html"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    networks:
+      - toolsproxy

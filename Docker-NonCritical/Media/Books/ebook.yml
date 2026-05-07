@@ -1,0 +1,56 @@
+services:
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: audiobookshelf
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.audiobookshelf.entrypoints=websecure
+      - traefik.http.routers.audiobookshelf.rule=Host(`audiobooks.${DOMAIN_NAME}`)
+      - traefik.http.routers.audiobookshelf.service=audiobookshelf
+      - traefik.http.services.audiobookshelf.loadbalancer.server.port=13378
+      - traefik.http.routers.audiobookshelf.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.audiobookshelf.tls.domains[0].main=audiobooks.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/Books/ebook.yml"
+      - "ha.service-name=audiobookshelf"
+    volumes:
+      - /mnt/data/media/audiobooks:/audiobooks
+      - /mnt/data/media/podcasts:/podcasts
+      - /srv/audiobookshelf/config:/config
+      - /mnt/data/media/metadata:/metadata
+
+  kavita:
+    image: lscr.io/linuxserver/kavita:latest
+    container_name: kavita
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.kavita.entrypoints=websecure
+      - traefik.http.routers.kavita.rule=Host(`kavita.${DOMAIN_NAME}`)
+      - traefik.http.routers.kavita.service=kavita
+      - traefik.http.services.kavita.loadbalancer.server.port=5000
+      - traefik.http.routers.kavita.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.kavita.tls.domains[0].main=kavita.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/Books/ebook.yml"
+      - "ha.service-name=kavita"
+    volumes:
+      - /srv/kavita/config:/config
+      - /mnt/data/media:/data
+
+networks:
+  mediaproxy:
+    external: true

@@ -1,0 +1,11 @@
+FROM netboxcommunity/netbox:latest
+
+COPY ./theme/plugin_requirements.txt /opt/netbox/
+RUN /opt/netbox/venv/bin/python -m pip install --no-warn-script-location -r /opt/netbox/plugin_requirements.txt
+
+# Copy plugin config
+COPY ./theme/plugins.py /etc/netbox/config/plugins.py
+
+# If plugins have static files, uncomment and run collectstatic
+# RUN DEBUG="true" SECRET_KEY="dummydummydummydummydummydummydummydummydummydummy" \
+#    /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py collectstatic --no-input

@@ -1,0 +1,114 @@
+name: Deploy SearX
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/SearX/searx.yml"
+      - "Docker-NonCritical/Tools/SearX/settings.yml"
+      - ".forgejo/workflows/deploy-searx.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/SearX/searx.yml"
+
+      - name: Deploy SearX
+        working-directory: "./Docker-NonCritical/Tools/SearX"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          SEARX_SECRET_KEY: ${{ secrets.SEARX_SECRET_KEY }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Use provided secret or generate a random one
+          SECRET_KEY="${SEARX_SECRET_KEY:-$(openssl rand -hex 32)}"
+
+          # Deploy settings.yml from repo — inject secret_key + domain at deploy time
+          sudo mkdir -p /srv/searx/config
+          sed \
+            -e "s/__SECRET_KEY__/${SECRET_KEY}/g" \
+            -e "s/__DOMAIN_NAME__/${DOMAIN_NAME}/g" \
+            settings.yml | sudo tee /srv/searx/config/settings.yml > /dev/null
+
+          # Deploy settings for searx-direct — non-VPN-friendly engines
+          sudo mkdir -p /srv/searx-direct/config
+          sed \
+            -e "s/__SECRET_KEY__/${SECRET_KEY}/g" \
+            -e "s/__DOMAIN_NAME__/${DOMAIN_NAME}/g" \
+            settings-direct.yml | sudo tee /srv/searx-direct/config/settings.yml > /dev/null
+
+          # Write uwsgi.ini — 8 workers so concurrent UserBrowser queries don't queue/timeout
+          {
+            printf '%s\n' '[uwsgi]'
+            printf '%s\n' 'module = searx.webapp:application'
+            printf '%s\n' 'http-socket = 0.0.0.0:8080'
+            printf '%s\n' 'workers = 8'
+            printf '%s\n' 'threads = 4'
+            printf '%s\n' 'enable-threads = true'
+            printf '%s\n' 'thunder-lock = true'
+            printf '%s\n' 'single-interpreter = true'
+            printf '%s\n' 'lazy-apps = true'
+            printf '%s\n' 'master = true'
+            printf '%s\n' 'pidfile = /tmp/searxng.pid'
+            printf '%s\n' 'worker-reload-mercy = 6'
+            printf '%s\n' 'disable-logging = true'
+            printf '%s\n' 'log-5xx = true'
+            printf '%s\n' 'buffer-size = 8192'
+            printf '%s\n' 'post-buffering = 4096'
+          } | sudo tee /srv/searx/config/uwsgi.ini > /dev/null
+
+          # Write uwsgi.ini for searx-direct — 4 workers (fewer engines, less concurrency needed)
+          {
+            printf '%s\n' '[uwsgi]'
+            printf '%s\n' 'module = searx.webapp:application'
+            printf '%s\n' 'http-socket = 0.0.0.0:8080'
+            printf '%s\n' 'workers = 4'
+            printf '%s\n' 'threads = 4'
+            printf '%s\n' 'enable-threads = true'
+            printf '%s\n' 'thunder-lock = true'
+            printf '%s\n' 'single-interpreter = true'
+            printf '%s\n' 'lazy-apps = true'
+            printf '%s\n' 'master = true'
+            printf '%s\n' 'pidfile = /tmp/searxng.pid'
+            printf '%s\n' 'worker-reload-mercy = 6'
+            printf '%s\n' 'disable-logging = true'
+            printf '%s\n' 'log-5xx = true'
+            printf '%s\n' 'buffer-size = 8192'
+            printf '%s\n' 'post-buffering = 4096'
+          } | sudo tee /srv/searx-direct/config/uwsgi.ini > /dev/null
+
+          defined_image=$(grep -m1 'image:' searx.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' searx 2>/dev/null || echo "none")
+          checksum=$(cat searx.yml settings.yml settings-direct.yml ../../.forgejo/workflows/deploy-searx.yml | sha256sum | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.searx_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying SearX..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p searx -f searx.yml down --remove-orphans || true
+            DOMAIN_NAME=${DOMAIN_NAME} CERTRESOLVER=${CERTRESOLVER} SEARX_SECRET_KEY=${SEARX_SECRET_KEY} \
+              docker compose -p searx -f searx.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.searx_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

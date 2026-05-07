@@ -1,0 +1,98 @@
+# Test deployment with secrets configured
+networks:
+  gitproxy:
+    name: gitproxy
+    external: true
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:14
+    container_name: forgejo
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+    environment:
+      - USER_UID=568
+      - USER_GID=568
+      - FORGEJO__database__DB_TYPE=postgres
+      - FORGEJO__database__HOST=git-db:5432
+      - FORGEJO__database__NAME=git
+      - FORGEJO__database__USER=git
+      - FORGEJO__database__PASSWD=${GIT_DB_PASSWORD}
+      - FORGEJO__actions__DEFAULT_ACTIONS_URL=https://data.forgejo.org
+      - FORGEJO__actions__ENABLED=true
+      - FORGEJO__actions__DISABLE_API=false
+      - FORGEJO__actions__DISABLE_WEBHOOKS=false
+      - FORGEJO__actions__DISABLE_GITHUB_WEBHOOKS=false
+      - FORGEJO__repository__ENABLE_LOCAL_PATH_MIGRATION=true
+      - SSH_LISTEN_PORT=2222
+      - FORGEJO__ui__THEMES=forgejo-light,forgejo-dark
+      - FORGEJO__ui__DEFAULT_THEME=forgejo-dark
+
+    networks:
+      - gitproxy
+
+    volumes:
+      - /srv/git/data:/data
+
+    ports:
+      - "3000:3000"
+      - "2222:2222"
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=management
+      - ha.compose-file=Docker-Critical/Management/Git - Forgejo/git.yml
+      - ha.service-name=forgejo
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.docker.network=gitproxy
+      - traefik.http.routers.git.rule=Host(`git.${DOMAIN_NAME}`)
+      - traefik.http.routers.git.entrypoints=websecure
+      - traefik.http.routers.git.service=git
+      - traefik.http.services.git.loadbalancer.server.port=3000
+      - traefik.http.routers.git.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.git.tls.domains[0].main=git.${DOMAIN_NAME}
+
+  git-db:
+    image: postgres:15
+    container_name: git-db
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.2'
+
+    environment:
+      - POSTGRES_USER=git
+      - POSTGRES_PASSWORD=${GIT_DB_PASSWORD}
+      - POSTGRES_DB=git
+
+    networks:
+      - gitproxy
+
+    volumes:
+      - /srv/git/postgres:/var/lib/postgresql/data
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=management
+      - ha.compose-file=Docker-Critical/Management/Git - Forgejo/git.yml
+      - ha.service-name=git-db

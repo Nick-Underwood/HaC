@@ -1,0 +1,27 @@
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: uptime-kuma
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - /srv/uptime-kuma/data:/app/data
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=toolsproxy
+      - traefik.http.routers.uptime-kuma.entrypoints=websecure
+      - traefik.http.routers.uptime-kuma.rule=Host(`uptime.${DOMAIN_NAME}`)
+      - traefik.http.routers.uptime-kuma.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.uptime-kuma.tls.domains[0].main=uptime.${DOMAIN_NAME}
+      - traefik.http.services.uptime-kuma.loadbalancer.server.port=3001
+      - ha.monitor=true
+      - ha.category=management
+      - ha.compose-file=Docker-Critical/Management/UptimeKuma/uptime-kuma.yml
+      - ha.service-name=uptime-kuma
+
+networks:
+  toolsproxy:
+    external: true

@@ -1,0 +1,66 @@
+services:
+  omada-controller:
+    image: mbentley/omada-controller:6
+    container_name: omada-controller
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - MANAGE_HTTP_PORT=8088
+      - MANAGE_HTTPS_PORT=8043
+      - PORTAL_HTTP_PORT=8088
+      - PORTAL_HTTPS_PORT=8843
+      - SHOW_SERVER_LOGS=true
+      - SHOW_MONGODB_LOGS=false
+      - SSL_CERT_NAME=tls.crt
+      - SSL_KEY_NAME=tls.key
+    ports:
+      - "8043:8043" # HTTPS portal (backend for Traefik)
+      - "8843:8843" # HTTPS guest portal
+      - "27001:27001/udp" # App discovery
+      - "29810:29810/udp" # EAP discovery
+      - "29811:29811" # Manager v1 port
+      - "29812:29812" # Manager v2 port
+      - "29813:29813" # Port for adopt and upgrade
+      - "29814:29814" # Port for manager/device discovery
+      - "29815:29815" # App management port
+    dns:
+      - ${DNS_SERVER}
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=toolsproxy"
+      # Router
+      - "traefik.http.routers.omada.entrypoints=websecure"
+      - "traefik.http.routers.omada.rule=Host(`omada.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.omada.service=omada-svc"
+      - "traefik.http.routers.omada.tls=true"
+      - "traefik.http.routers.omada.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.omada.tls.domains[0].main=omada.${DOMAIN_NAME}"
+      - "traefik.http.routers.omada.middlewares=omada-headers"
+      # Service: HTTPS 8043 backend (insecureSkipVerify enabled globally in Traefik)
+      - "traefik.http.services.omada-svc.loadbalancer.server.scheme=https"
+      - "traefik.http.services.omada-svc.loadbalancer.server.port=8043"
+      - "traefik.http.services.omada-svc.loadbalancer.passhostheader=true"
+      # Middleware: Host header rewrite to prevent Omada port redirect
+      - "traefik.http.middlewares.omada-headers.headers.customrequestheaders.Host=omada.${DOMAIN_NAME}:8043"
+      - "traefik.http.middlewares.omada-headers.headers.customresponseheaders.Host=omada.${DOMAIN_NAME}"
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-Critical/Networking/Omada/omada.yml"
+      - "ha.service-name=omada-controller"
+    volumes:
+      - /srv/omada/data:/opt/tplink/EAPController/data
+      - /mnt/hdd/logs/omada:/opt/tplink/EAPController/logs
+      - /mnt/hdd/omada/backups:/opt/tplink/EAPController/data/autobackup
+
+networks:
+  toolsproxy:
+    external: true

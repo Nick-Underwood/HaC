@@ -1,0 +1,62 @@
+name: Deploy Sonarr
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Media/Sonarr/**"
+      - ".forgejo/workflows/deploy-sonarr.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Media/Sonarr/sonarr.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Media/Sonarr"
+        env:
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' sonarr.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' sonarr 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum sonarr.yml | awk '{print $1}')
+          old=$(cat .sonarr_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Sonarr"
+
+            # Deploy
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p sonarr -f sonarr.yml down --remove-orphans || true
+            PUID=$PUID PGID=$PGID TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              docker compose -p sonarr -f sonarr.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .sonarr_checksum
+          else
+            echo "No redeploy needed"
+          fi

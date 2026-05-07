@@ -1,0 +1,59 @@
+name: Deploy NUT
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/NUT/**"
+      - ".forgejo/workflows/deploy-nut.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy NUT
+        env:
+          TZ: ${{ vars.TZ }}
+          NUT_UPS1_SERIAL: ${{ secrets.NUT_UPS1_SERIAL }}
+          NUT_UPS2_SERIAL: ${{ secrets.NUT_UPS2_SERIAL }}
+          NUT_API_PASSWORD: ${{ secrets.NUT_API_PASSWORD }}
+        run: |
+          for var in NUT_UPS1_SERIAL NUT_UPS2_SERIAL NUT_API_PASSWORD; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' Docker-Critical/Home/NUT/nut.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' nut-ups1 2>/dev/null || echo "none")
+          checksum=$(sha256sum Docker-Critical/Home/NUT/nut.yml | awk '{print $1}')
+          old=$(cat /srv/nut/.nut_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying NUT..."
+            sudo mkdir -p /srv/nut
+            sudo cp Docker-Critical/Home/NUT/nut.yml /srv/nut/
+            sudo chmod 644 /srv/nut/nut.yml
+
+            cd /srv/nut
+            TZ=${TZ:-America/Chicago} \
+            NUT_UPS1_SERIAL=$NUT_UPS1_SERIAL \
+            NUT_UPS2_SERIAL=$NUT_UPS2_SERIAL \
+            NUT_API_PASSWORD=$NUT_API_PASSWORD \
+            docker compose -p nut -f nut.yml up -d --force-recreate
+
+            echo "$checksum" > /srv/nut/.nut_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

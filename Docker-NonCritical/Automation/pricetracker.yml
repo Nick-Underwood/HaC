@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  pricetracker:
+    image: cybrarist/discount-bandit:v4
+    container_name: pricetracker
+    ports:
+      - "8080:80"
+    volumes:
+      - ./database/database.sqlite:/app/database/sqlite
+      - ./logs:/logs
+    environment:
+      - DB_CONNECTION=sqlite
+      - APP_TIMEZONE=UTC
+      - THEME_COLOR=Red
+      - APP_URL=https://pricetracker.${DOMAIN_NAME}
+      - ASSET_URL=https://pricetracker.${DOMAIN_NAME}
+      - EXCHANGE_RATE_API_KEY=""
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=automation"
+      - "ha.compose-file=Docker-NonCritical/Automation/pricetracker.yml"
+      - "ha.service-name=pricetracker"
+  db:
+    image: sqlite:latest
+    container_name: pricetracker-db
+    volumes:
+      - ./database:/var/lib/sqlite
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=automation"
+      - "ha.compose-file=Docker-NonCritical/Automation/pricetracker.yml"
+      - "ha.service-name=db"
+networks:
+  toolsproxy:
+    external: true

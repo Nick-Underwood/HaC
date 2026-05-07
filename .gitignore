@@ -1,0 +1,36 @@
+.ai*
+.continue/
+GETTING_STARTED.md
+.github/copilot-instructions.md
+nul
+.github/agents/
+.github/prompts/
+.github/instructions/
+*.instructions.md
+*.agent.md
+*.prompt.md
+AGENTS.md
+SKILL.md
+
+# Workflow artifacts
+.*_checksum
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE settings (use VSCode Settings Sync instead)
+*.code-workspace
+!hac.code-workspace
+*.code-workspace.local
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+# Secrets and tokens
+insert_token*.sql
+.runner.json
+setup-runner*.sh

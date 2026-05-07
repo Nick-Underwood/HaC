@@ -1,0 +1,29 @@
+services:
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: whisper
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - WHISPER__MODEL=base
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.whisper.entrypoints=websecure
+      - traefik.http.routers.whisper.rule=Host(`whisper.${DOMAIN_NAME}`)
+      - traefik.http.routers.whisper.service=whisper
+      - traefik.http.routers.whisper.tls=true
+      - traefik.http.routers.whisper.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.whisper.tls.domains[0].main=whisper.${DOMAIN_NAME}
+      - traefik.http.services.whisper.loadbalancer.server.port=8000
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-Critical/Home/Whisper/whisper.yml"
+      - "ha.service-name=whisper"
+    volumes:
+      - /srv/whisper/models:/root/.cache/huggingface
+
+networks:
+  homeproxy:
+    external: true

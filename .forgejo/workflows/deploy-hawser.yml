@@ -1,0 +1,51 @@
+name: Deploy Hawser
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/Hawser/**"
+      - ".forgejo/workflows/deploy-hawser.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/Hawser/hawser.yml"
+
+      - name: Deploy Hawser
+        working-directory: "./Docker-NonCritical/Tools/Hawser"
+        env:
+          TZ: ${{ vars.TZ }}
+        run: |
+          if [ -z "$TZ" ]; then
+            echo "Missing required variable: TZ" >&2
+            exit 1
+          fi
+
+          defined_image=$(grep -m1 'image:.*hawser' hawser.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' hawser 2>/dev/null || echo "none")
+          checksum=$(sha256sum hawser.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.hawser_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Hawser..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p hawser -f hawser.yml down --remove-orphans || true
+            docker compose -p hawser -f hawser.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.hawser_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

@@ -1,0 +1,30 @@
+services:
+  readarr:
+    image: linuxserver/readarr:0.4.19-nightly
+    container_name: readarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.readarr.entrypoints=websecure
+      - traefik.http.routers.readarr.rule=Host(`readarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.readarr.service=readarr
+      - traefik.http.services.readarr.loadbalancer.server.port=8787
+      - traefik.http.routers.readarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.readarr.tls.domains[0].main=readarr.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/readarr/readarr.yml"
+      - "ha.service-name=readarr"
+    volumes:
+      - /srv/readarr/config:/config
+      - /mnt/data:/data
+
+networks:
+  mediaproxy:
+    external: true

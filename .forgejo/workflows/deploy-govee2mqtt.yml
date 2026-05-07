@@ -1,0 +1,58 @@
+name: Deploy Govee2MQTT
+#
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/Govee2MQTT/**"
+      - ".forgejo/workflows/deploy-govee2mqtt.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Govee2MQTT
+        env:
+          GOVEE_EMAIL: ${{ secrets.GOVEE_EMAIL }}
+          GOVEE_PASSWORD: ${{ secrets.GOVEE_PASSWORD }}
+          GOVEE_API_KEY: ${{ secrets.GOVEE_API_KEY }}
+          GOVEE_MQTT_USER: ${{ secrets.GOVEE_MQTT_USER }}
+          GOVEE_MQTT_PASSWORD: ${{ secrets.GOVEE_MQTT_PASSWORD }}
+          GOVEE_TEMPERATURE_SCALE: ${{ vars.GOVEE_TEMPERATURE_SCALE }}
+          TZ: ${{ vars.TZ }}
+        run: |
+          defined_image=$(grep -m1 'image:' Docker-Critical/Home/Govee2MQTT/govee2mqtt.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' govee2mqtt 2>/dev/null || echo "none")
+          checksum=$(sha256sum Docker-Critical/Home/Govee2MQTT/govee2mqtt.yml | awk '{print $1}')
+          old=$(cat /srv/govee2mqtt/.govee2mqtt_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Govee2MQTT..."
+            sudo mkdir -p /srv/govee2mqtt/data /srv/govee2mqtt/mosquitto/{config,data,log}
+            sudo cp Docker-Critical/Home/Govee2MQTT/govee2mqtt.yml /srv/govee2mqtt/
+            sudo chmod 644 /srv/govee2mqtt/govee2mqtt.yml
+
+            cd /srv/govee2mqtt
+            docker compose -p govee2mqtt -f govee2mqtt.yml down --remove-orphans || true
+            GOVEE_EMAIL=$GOVEE_EMAIL \
+            GOVEE_PASSWORD=$GOVEE_PASSWORD \
+            GOVEE_API_KEY=$GOVEE_API_KEY \
+            GOVEE_MQTT_USER=$GOVEE_MQTT_USER \
+            GOVEE_MQTT_PASSWORD=$GOVEE_MQTT_PASSWORD \
+            GOVEE_TEMPERATURE_SCALE=${GOVEE_TEMPERATURE_SCALE:-C} \
+            TZ=${TZ:-America/Chicago} \
+            docker compose -p govee2mqtt -f govee2mqtt.yml up -d --force-recreate
+
+            echo "$checksum" | sudo tee /srv/govee2mqtt/.govee2mqtt_checksum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

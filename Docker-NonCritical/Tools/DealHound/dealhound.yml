@@ -1,0 +1,218 @@
+networks:
+  toolsproxy:
+    external: true
+  mediaproxy:
+    external: true
+
+services:
+  dealhound:
+    image: git.${DOMAIN_NAME}/nicholas/dealhound:latest
+    container_name: dealhound
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - UI_STORAGE_SECRET=${UI_STORAGE_SECRET}
+      # PriceBuddy MySQL (internal)
+      - PRICEBUDDY_DB_HOST=pricebuddy-db
+      - PRICEBUDDY_DB_PORT=3306
+      - PRICEBUDDY_DB_NAME=pricebuddy
+      - PRICEBUDDY_DB_USER=pricebuddy
+      - PRICEBUDDY_DB_PASSWORD=${PRICEBUDDY_DB_PASSWORD}
+      # ChangeDetection.io
+      - CHANGEDETECTION_BASE_URL=http://changedetection:5000
+      - CHANGEDETECTION_API_KEY=${CHANGEDETECTION_API_KEY}
+      # ntfy (standalone service on toolsproxy)
+      - NTFY_BASE_URL=http://ntfy:80
+      - NTFY_TOPIC=${NTFY_TOPIC:-dealhound-alerts}
+      # eBay Browse API + account deletion compliance
+      - EBAY_CLIENT_ID=${EBAY_CLIENT_ID}
+      - EBAY_CLIENT_SECRET=${EBAY_CLIENT_SECRET}
+      - EBAY_VERIFICATION_TOKEN=${EBAY_VERIFICATION_TOKEN}
+      - EBAY_DELETION_ENDPOINT_URL=https://deals.${DOMAIN_NAME}/webhooks/ebay/deletion
+      # Vikunja (optional — configure once project is set up)
+      - VIKUNJA_BASE_URL=${VIKUNJA_BASE_URL:-}
+      - VIKUNJA_API_TOKEN=${VIKUNJA_API_TOKEN:-}
+      - VIKUNJA_SHOPPING_PROJECT_ID=${VIKUNJA_SHOPPING_PROJECT_ID:-0}
+      - VIKUNJA_WEBHOOK_SECRET=${VIKUNJA_WEBHOOK_SECRET:-}
+      # Mealie (optional)
+      - MEALIE_BASE_URL=${MEALIE_BASE_URL:-}
+      - MEALIE_API_TOKEN=${MEALIE_API_TOKEN:-}
+      # Craigslist (via existing flaresolverr on mediaproxy)
+      - CRAIGSLIST_SITES=${CRAIGSLIST_SITES:-minneapolis}
+      - CRAIGSLIST_SEARCH_DISTANCE=${CRAIGSLIST_SEARCH_DISTANCE:-50}
+      - FLARESOLVERR_URL=http://flaresolverr:8191
+      # Facebook Marketplace
+      - FACEBOOK_ENABLED=${FACEBOOK_ENABLED:-false}
+      - FB_EMAIL=${FB_EMAIL:-}
+      - FB_PASSWORD=${FB_PASSWORD:-}
+      - FB_LOCATION=${FB_LOCATION:-minneapolis}
+      # Home Assistant fallback notifications (optional)
+      - HA_BASE_URL=${HA_BASE_URL:-}
+      - HA_WEBHOOK_ID=${HA_WEBHOOK_ID:-}
+    volumes:
+      - /srv/dealhound/data:/app/data
+      - /srv/dealhound/fb_session:/app/fb_session
+    networks:
+      - default
+      - toolsproxy
+      - mediaproxy
+    depends_on:
+      pricebuddy:
+        condition: service_healthy
+      changedetection:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=toolsproxy"
+      # Main router — Authentik SSO required for all traffic
+      - "traefik.http.routers.dealhound.entrypoints=websecure"
+      - "traefik.http.routers.dealhound.rule=Host(`deals.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.dealhound.service=dealhound"
+      - "traefik.http.routers.dealhound.middlewares=authentik@docker"
+      - "traefik.http.routers.dealhound.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.dealhound.tls.domains[0].main=deals.${DOMAIN_NAME}"
+      # Public router — eBay deletion endpoint must be reachable without auth
+      - "traefik.http.routers.dealhound-ebay.entrypoints=websecure"
+      - "traefik.http.routers.dealhound-ebay.rule=Host(`deals.${DOMAIN_NAME}`) && PathPrefix(`/webhooks/ebay/deletion`)"
+      - "traefik.http.routers.dealhound-ebay.service=dealhound"
+      - "traefik.http.routers.dealhound-ebay.priority=10"
+      - "traefik.http.routers.dealhound-ebay.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.services.dealhound.loadbalancer.server.port=8080"
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=dealhound"
+
+  # ── PriceBuddy retail price tracking engine ───────────────────────────────
+  pricebuddy:
+    image: jez500/pricebuddy:latest
+    container_name: pricebuddy
+    restart: unless-stopped
+    environment:
+      - DB_HOST=pricebuddy-db
+      - DB_USERNAME=pricebuddy
+      - DB_PASSWORD=${PRICEBUDDY_DB_PASSWORD}
+      - DB_DATABASE=pricebuddy
+      - APP_KEY=${PRICEBUDDY_APP_KEY}
+      - APP_USER_EMAIL=${PRICEBUDDY_ADMIN_EMAIL}
+      - APP_USER_PASSWORD=${PRICEBUDDY_ADMIN_PASSWORD}
+      - SCRAPER_BASE_URL=http://pricebuddy-scraper:3000
+      - AFFILIATE_ENABLED=false
+      - TZ=${TZ}
+    volumes:
+      - /srv/dealhound/pricebuddy:/app/storage
+    networks:
+      - default
+      - toolsproxy
+    depends_on:
+      pricebuddy-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/80' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=toolsproxy"
+      - "traefik.http.routers.pricebuddy.entrypoints=websecure"
+      - "traefik.http.routers.pricebuddy.rule=Host(`pricebuddy.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.pricebuddy.service=pricebuddy"
+      - "traefik.http.services.pricebuddy.loadbalancer.server.port=80"
+      - "traefik.http.routers.pricebuddy.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.pricebuddy.tls.domains[0].main=pricebuddy.${DOMAIN_NAME}"
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=pricebuddy"
+
+  pricebuddy-db:
+    image: mysql:8.2
+    container_name: pricebuddy-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_DATABASE=pricebuddy
+      - MYSQL_USER=pricebuddy
+      - MYSQL_PASSWORD=${PRICEBUDDY_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${PRICEBUDDY_DB_ROOT_PASSWORD}
+      - TZ=${TZ}
+    volumes:
+      - /srv/dealhound/pricebuddy-db:/var/lib/mysql
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=pricebuddy-db"
+
+  pricebuddy-scraper:
+    image: jez500/seleniumbase-scrapper:latest
+    container_name: pricebuddy-scraper
+    restart: unless-stopped
+    networks:
+      - default
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=pricebuddy-scraper"
+
+  # ── ChangeDetection.io overflow scraper ──────────────────────────────────
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io:latest
+    container_name: changedetection
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - PLAYWRIGHT_DRIVER_URL=ws://playwright-chrome:3000
+    volumes:
+      - /srv/dealhound/changedetection:/datastore
+    networks:
+      - default
+      - toolsproxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=toolsproxy"
+      - "traefik.http.routers.changedetection.entrypoints=websecure"
+      - "traefik.http.routers.changedetection.rule=Host(`changedetection.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.changedetection.service=changedetection"
+      - "traefik.http.services.changedetection.loadbalancer.server.port=5000"
+      - "traefik.http.routers.changedetection.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.changedetection.tls.domains[0].main=changedetection.${DOMAIN_NAME}"
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=changedetection"
+
+  playwright-chrome:
+    image: browserless/chrome:latest
+    container_name: playwright-chrome
+    restart: unless-stopped
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1024
+      - SCREEN_DEPTH=16
+      - MAX_CONCURRENT_SESSIONS=5
+      - CONNECTION_TIMEOUT=300000
+    networks:
+      - default
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Tools/DealHound/dealhound.yml"
+      - "ha.service-name=playwright-chrome"

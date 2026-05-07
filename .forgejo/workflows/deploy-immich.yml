@@ -1,0 +1,67 @@
+name: Deploy Immich
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Media/Immich/**"
+      - ".forgejo/workflows/deploy-immich.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Immich compose file exists
+        run: |
+          ls -l "./Docker-NonCritical/Media/Immich/immich.yml"
+
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Media/Immich"
+        env:
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          IMMICH_DB_USERNAME: ${{ vars.IMMICH_DB_USERNAME }}
+          IMMICH_DB_PASSWORD: ${{ secrets.IMMICH_DB_PASSWORD }}
+          IMMICH_DB_DATABASE: ${{ vars.IMMICH_DB_DATABASE }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' immich.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' immich 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum immich.yml | awk '{print $1}')
+          old=$(cat .immich_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Immich"
+
+            # Deploy
+            TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              IMMICH_DB_USERNAME=$IMMICH_DB_USERNAME IMMICH_DB_PASSWORD=$IMMICH_DB_PASSWORD IMMICH_DB_DATABASE=$IMMICH_DB_DATABASE \
+              docker compose -p immich -f immich.yml down --remove-orphans || true
+            TZ=$TZ DOMAIN_NAME=$DOMAIN_NAME CERTRESOLVER=$CERTRESOLVER \
+              IMMICH_DB_USERNAME=$IMMICH_DB_USERNAME IMMICH_DB_PASSWORD=$IMMICH_DB_PASSWORD IMMICH_DB_DATABASE=$IMMICH_DB_DATABASE \
+              docker compose -p immich -f immich.yml up -d --force-recreate
+
+            # Save checksum
+            echo "$checksum" > .immich_checksum
+          else
+            echo "No redeploy needed"
+          fi

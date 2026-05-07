@@ -1,0 +1,54 @@
+services:
+  nut-ups1:
+    image: instantlinux/nut-upsd:latest
+    container_name: nut-ups1
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - NAME=ups1
+      - DRIVER=usbhid-ups
+      - PORT=auto
+      - SERIAL=${NUT_UPS1_SERIAL}
+      - API_USER=upsmon
+      - API_PASSWORD=${NUT_API_PASSWORD}
+    ports:
+      - "3493:3493"
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=home"
+      - "ha.compose-file=Docker-Critical/Home/NUT/nut.yml"
+      - "ha.service-name=nut-ups1"
+    devices:
+      - /dev/usb/hiddev0:/dev/usb/hiddev0
+    privileged: true
+
+  nut-ups2:
+    image: instantlinux/nut-upsd:latest
+    container_name: nut-ups2
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - NAME=ups2
+      - DRIVER=usbhid-ups
+      - PORT=auto
+      - SERIAL=${NUT_UPS2_SERIAL}
+      - API_USER=upsmon
+      - API_PASSWORD=${NUT_API_PASSWORD}
+    ports:
+      - "3494:3493"
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=home"
+      - "ha.compose-file=Docker-Critical/Home/NUT/nut.yml"
+      - "ha.service-name=nut-ups2"
+    devices:
+      - /dev/usb/hiddev2:/dev/usb/hiddev2
+    privileged: true
+
+networks:
+  homeproxy:
+    external: true

@@ -1,0 +1,28 @@
+services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - LOG_LEVEL=info
+      - LOG_HTML=false
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=mediaproxy
+      - traefik.http.routers.flare.entrypoints=websecure
+      - traefik.http.routers.flare.rule=Host(`flare.${DOMAIN_NAME}`)
+      - traefik.http.routers.flare.service=flare
+      - traefik.http.services.flare.loadbalancer.server.port=8191
+      - traefik.http.routers.flare.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.flare.tls.domains[0].main=flare.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/flaresolverr/flaresolverr.yml"
+      - "ha.service-name=flaresolverr"
+
+networks:
+  mediaproxy:
+    external: true

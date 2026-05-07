@@ -1,0 +1,178 @@
+command_line:
+  - sensor:
+      name: Homebox Statistics Raw
+      unique_id: homebox_statistics_raw
+      command: >-
+        bash /config/scripts/homebox_api.sh statistics
+        {{ states('input_text.homebox_url') }}
+        {{ states('input_text.homebox_email') }}
+        {{ states('input_text.homebox_password') }}
+      scan_interval: 3600
+      value_template: "{{ value_json.totalItems | default(0) }}"
+      json_attributes:
+        - totalItems
+        - totalLocations
+        - totalTags
+        - totalWithWarranty
+        - totalInsuredValue
+        - totalPurchasePrice
+      command_timeout: 30
+
+  - sensor:
+      name: Homebox Maintenance Raw
+      unique_id: homebox_maintenance_raw
+      command: >-
+        bash /config/scripts/homebox_api.sh maintenance
+        {{ states('input_text.homebox_url') }}
+        {{ states('input_text.homebox_email') }}
+        {{ states('input_text.homebox_password') }}
+      scan_interval: 3600
+      value_template: "{{ value_json | length | default(0) }}"
+      json_attributes:
+        - entries
+      command_timeout: 30
+
+input_text:
+  homebox_url:
+    name: Homebox URL
+    initial: !secret homebox_url
+    mode: text
+  homebox_email:
+    name: Homebox Email
+    initial: !secret homebox_email
+    mode: text
+  homebox_password:
+    name: Homebox Password
+    initial: !secret homebox_password
+    mode: password
+
+template:
+  - sensor:
+      - name: Homebox Total Items
+        unique_id: homebox_total_items
+        icon: mdi:package-variant-closed
+        state: >-
+          {{ state_attr('sensor.homebox_statistics_raw', 'totalItems') | default(0) }}
+        unit_of_measurement: items
+
+      - name: Homebox Total Locations
+        unique_id: homebox_total_locations
+        icon: mdi:map-marker
+        state: >-
+          {{ state_attr('sensor.homebox_statistics_raw', 'totalLocations') | default(0) }}
+        unit_of_measurement: locations
+
+      - name: Homebox Total Value
+        unique_id: homebox_total_value
+        icon: mdi:currency-usd
+        state: >-
+          {{ state_attr('sensor.homebox_statistics_raw', 'totalPurchasePrice') | default(0) | round(2) }}
+        unit_of_measurement: USD
+        device_class: monetary
+
+      - name: Homebox Overdue Maintenance
+        unique_id: homebox_overdue_maintenance
+        icon: mdi:wrench-clock
+        state: >-
+          {% set entries = state_attr('sensor.homebox_maintenance_raw', 'entries') | default([]) %}
+          {% set today = now().strftime('%Y-%m-%d') %}
+          {% set count = namespace(n=0) %}
+          {% for e in entries %}
+            {% if e.scheduledDate is defined and e.scheduledDate <= today and not e.completedDate %}
+              {% set count.n = count.n + 1 %}
+            {% endif %}
+          {% endfor %}
+          {{ count.n }}
+        unit_of_measurement: items
+
+      - name: Homebox Next Maintenance
+        unique_id: homebox_next_maintenance
+        icon: mdi:wrench
+        state: >-
+          {% set entries = state_attr('sensor.homebox_maintenance_raw', 'entries') | default([]) %}
+          {% set today = now().strftime('%Y-%m-%d') %}
+          {% set upcoming = [] %}
+          {% for e in entries %}
+            {% if e.scheduledDate is defined and e.scheduledDate >= today and not e.completedDate %}
+              {% set upcoming = upcoming + [e] %}
+            {% endif %}
+          {% endfor %}
+          {% if upcoming | length > 0 %}
+            {% set next = upcoming | sort(attribute='scheduledDate') | first %}
+            {{ next.name }} - {{ next.scheduledDate }}
+          {% else %}
+            None scheduled
+          {% endif %}
+        attributes:
+          scheduled_date: >-
+            {% set entries = state_attr('sensor.homebox_maintenance_raw', 'entries') | default([]) %}
+            {% set today = now().strftime('%Y-%m-%d') %}
+            {% set upcoming = [] %}
+            {% for e in entries %}
+              {% if e.scheduledDate is defined and e.scheduledDate >= today and not e.completedDate %}
+                {% set upcoming = upcoming + [e] %}
+              {% endif %}
+            {% endfor %}
+            {% if upcoming | length > 0 %}
+              {{ (upcoming | sort(attribute='scheduledDate') | first).scheduledDate }}
+            {% else %}
+              unknown
+            {% endif %}
+
+automation:
+  - alias: Homebox Maintenance Reminder
+    id: homebox_maintenance_reminder
+    description: Daily notification for upcoming or overdue Homebox maintenance
+    trigger:
+      - platform: time
+        at: "09:00:00"
+    condition:
+      - condition: or
+        conditions:
+          - condition: numeric_state
+            entity_id: sensor.homebox_overdue_maintenance
+            above: 0
+          - condition: template
+            value_template: >-
+              {% set entries = state_attr('sensor.homebox_maintenance_raw', 'entries') | default([]) %}
+              {% set week = (now() + timedelta(days=7)).strftime('%Y-%m-%d') %}
+              {% set today = now().strftime('%Y-%m-%d') %}
+              {% set ns = namespace(found=false) %}
+              {% for e in entries %}
+                {% if e.scheduledDate is defined and e.scheduledDate >= today and e.scheduledDate <= week and not e.completedDate %}
+                  {% set ns.found = true %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.found }}
+    action:
+      - action: persistent_notification.create
+        data:
+          title: "Homebox Maintenance Reminder"
+          notification_id: homebox_maintenance
+          message: >-
+            {% set entries = state_attr('sensor.homebox_maintenance_raw', 'entries') | default([]) %}
+            {% set today = now().strftime('%Y-%m-%d') %}
+            {% set week = (now() + timedelta(days=7)).strftime('%Y-%m-%d') %}
+            {% set overdue = [] %}
+            {% set upcoming = [] %}
+            {% for e in entries %}
+              {% if e.scheduledDate is defined and not e.completedDate %}
+                {% if e.scheduledDate < today %}
+                  {% set overdue = overdue + [e] %}
+                {% elif e.scheduledDate <= week %}
+                  {% set upcoming = upcoming + [e] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% if overdue | length > 0 %}
+            **Overdue ({{ overdue | length }}):**
+            {% for e in overdue %}
+            - {{ e.name }} (due {{ e.scheduledDate }})
+            {% endfor %}
+            {% endif %}
+            {% if upcoming | length > 0 %}
+            **Upcoming this week ({{ upcoming | length }}):**
+            {% for e in upcoming %}
+            - {{ e.name }} (due {{ e.scheduledDate }})
+            {% endfor %}
+            {% endif %}

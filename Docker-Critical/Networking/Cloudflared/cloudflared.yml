@@ -1,0 +1,15 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - TUNNEL_TOKEN=${HA_CF_TUNNEL_TOKEN}
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-Critical/Networking/Cloudflared/cloudflared.yml"
+      - "ha.service-name=cloudflared"
+    command: tunnel --no-autoupdate run --token ${HA_CF_TUNNEL_TOKEN}

@@ -1,0 +1,59 @@
+name: Deploy Dockhand
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Tools/Dockhand/**"
+      - ".forgejo/workflows/deploy-dockhand.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Tools/Dockhand/dockhand.yml"
+
+      - name: Deploy Dockhand
+        working-directory: "./Docker-Critical/Tools/Dockhand"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          DOCKHAND_ENCRYPTION_KEY: ${{ secrets.DOCKHAND_ENCRYPTION_KEY }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER TZ PUID PGID DOCKHAND_ENCRYPTION_KEY; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:.*dockhand' dockhand.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' dockhand 2>/dev/null || echo "none")
+          checksum=$(sha256sum dockhand.yml | awk '{print $1}')
+          old=$(sudo cat /srv/dockhand/.dockhand_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Dockhand..."
+            sudo mkdir -p /srv/dockhand/data
+
+            docker compose -p dockhand -f dockhand.yml down --remove-orphans || true
+            docker compose -p dockhand -f dockhand.yml up -d --force-recreate
+            echo "$checksum" | sudo tee /srv/dockhand/.dockhand_checksum > /dev/null
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

@@ -1,0 +1,57 @@
+name: Deploy N8N
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Tools/N8N/n8n.yml"
+      - ".forgejo/workflows/deploy-n8n.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Tools/N8N/n8n.yml"
+
+      - name: Deploy N8N
+        working-directory: "./Docker-Critical/Tools/N8N"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          N8N_BASIC_AUTH_USER: ${{ vars.N8N_BASIC_AUTH_USER }}
+          N8N_BASIC_AUTH_PASSWORD: ${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
+          N8N_DB_PASSWORD: ${{ secrets.N8N_DB_PASSWORD }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER N8N_BASIC_AUTH_USER N8N_BASIC_AUTH_PASSWORD N8N_DB_PASSWORD; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:.*n8n' n8n.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' n8n 2>/dev/null || echo "none")
+          checksum=$(sha256sum n8n.yml | awk '{print $1}')
+          old=$(cat ~/.hac-critical/.n8n_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying N8N..."
+            mkdir -p ~/.hac-critical
+
+            docker compose -p n8n down --remove-orphans || true
+            docker compose -p n8n -f n8n.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-critical/.n8n_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

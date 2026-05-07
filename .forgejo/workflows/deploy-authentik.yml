@@ -1,0 +1,64 @@
+name: Authentik Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Auth/Authentik.yml"
+      - ".forgejo/workflows/deploy-authentik.yml"
+  workflow_dispatch:
+#
+jobs:
+  deploy:
+    runs-on: docker-critical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify files exist
+        run: |
+          ls -l "./Docker-Critical/Auth/Authentik.yml"
+
+      - name: Prepare server directories
+        run: |
+          sudo mkdir -p /srv/authentik/postgres
+          sudo mkdir -p /srv/authentik/media
+          sudo mkdir -p /srv/authentik/custom-templates
+          sudo mkdir -p /srv/authentik/certs
+          # Authentik runs as UID 1000 internally; media/templates/certs must be writable
+          sudo chown -R 1000:1000 /srv/authentik/media /srv/authentik/custom-templates /srv/authentik/certs
+
+      - name: Compare image and config
+        working-directory: "./Docker-Critical/Auth"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          AUTHENTIK_DB_PASSWORD: ${{ secrets.AUTHENTIK_DB_PASSWORD }}
+          AUTHENTIK_SECRET_KEY: ${{ secrets.AUTHENTIK_SECRET_KEY }}
+        run: |
+          defined_image=$(grep -m1 'image: ghcr.io/goauthentik' Authentik.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' authentik-server 2>/dev/null || echo "none")
+          checksum=$(sha256sum Authentik.yml | awk '{print $1}')
+          old=$(cat .authentik_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Authentik"
+
+            docker rm -f authentik-server authentik-worker authentik-db authentik-redis || true
+            docker compose -p authentik -f Authentik.yml down --remove-orphans || true
+            docker compose -p authentik -f Authentik.yml up -d --force-recreate
+
+            echo "$checksum" > .authentik_checksum
+          else
+            echo "No redeploy needed"
+          fi

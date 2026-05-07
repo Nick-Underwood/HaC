@@ -1,0 +1,29 @@
+services:
+  prowlarr:
+    image: ghcr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prowlarr.entrypoints=websecure
+      - traefik.http.routers.prowlarr.rule=Host(`prowlarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.prowlarr.service=prowlarr
+      - traefik.http.services.prowlarr.loadbalancer.server.port=9696
+      - traefik.http.routers.prowlarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.prowlarr.tls.domains[0].main=prowlarr.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=media"
+      - "ha.compose-file=Docker-NonCritical/Media/prowlarr/prowlarr.yml"
+      - "ha.service-name=prowlarr"
+    volumes:
+      - /srv/prowlarr/config:/config
+
+networks:
+  mediaproxy:
+    external: true

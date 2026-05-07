@@ -1,0 +1,59 @@
+name: Deploy ntfy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/ntfy/**"
+      - ".forgejo/workflows/deploy-ntfy.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/ntfy/ntfy.yml"
+
+      - name: Deploy ntfy
+        working-directory: "./Docker-NonCritical/Tools/ntfy"
+        env:
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          for var in TZ DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          sudo mkdir -p /srv/ntfy
+          sudo chown -R nicholas:nicholas /srv/ntfy
+
+          defined_image=$(grep -m1 'image:' ntfy.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' ntfy 2>/dev/null || echo "none")
+          checksum=$(sha256sum ntfy.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.ntfy_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying ntfy..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p ntfy -f ntfy.yml down --remove-orphans || true
+            docker compose -p ntfy -f ntfy.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.ntfy_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

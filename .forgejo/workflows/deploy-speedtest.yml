@@ -1,0 +1,54 @@
+name: Deploy Speedtest
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/Speedtest/speedtest.yml"
+      - ".forgejo/workflows/deploy-speedtest.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/Speedtest/speedtest.yml"
+
+      - name: Deploy Speedtest
+        working-directory: "./Docker-NonCritical/Tools/Speedtest"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' speedtest.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' speedtest 2>/dev/null || echo "none")
+          checksum=$(sha256sum speedtest.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.speedtest_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Speedtest..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p speedtest down --remove-orphans || true
+            docker compose -p speedtest -f speedtest.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.speedtest_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

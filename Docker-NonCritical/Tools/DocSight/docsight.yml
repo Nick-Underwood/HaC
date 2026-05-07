@@ -1,0 +1,41 @@
+networks:
+  toolsproxy:
+    external: true
+services:
+  docsight:
+    image: ghcr.io/itsdnns/docsight:latest
+    container_name: docsight
+    restart: unless-stopped
+    # Xfinity bridge mode can block modem UI polling from LAN in some setups.
+    # If DOCSIS polling fails, use Generic Router mode in the setup wizard.
+    environment:
+      - TZ=${TZ}
+      - WEB_PORT=8765
+      - LOG_LEVEL=${DOCSIGHT_LOG_LEVEL:-INFO}
+      - DOCSIGHT_AUDIT_JSON=${DOCSIGHT_AUDIT_JSON:-1}
+      - MQTT_HOST=${MQTT_HOST:-}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_USER=${MQTT_USER:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      - MQTT_TOPIC_PREFIX=${DOCSIGHT_MQTT_TOPIC_PREFIX:-docsight}
+      - MQTT_DISCOVERY_PREFIX=${DOCSIGHT_MQTT_DISCOVERY_PREFIX:-homeassistant}
+      - PUBLIC_URL=${DOCSIGHT_PUBLIC_URL:-https://docsight.${DOMAIN_NAME}}
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/DocSight/docsight.yml
+      - ha.service-name=docsight
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.docsight.entrypoints=websecure
+      - traefik.http.routers.docsight.rule=Host(`docsight.${DOMAIN_NAME}`)
+      - traefik.http.routers.docsight.service=docsight
+      - traefik.http.services.docsight.loadbalancer.server.port=8765
+      - traefik.http.routers.docsight.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.docsight.middlewares=authentik@docker
+    networks:
+      - toolsproxy
+    volumes:
+      - /srv/docsight/data:/data
+      - /srv/docsight/modules:/modules

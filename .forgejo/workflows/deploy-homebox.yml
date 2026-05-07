@@ -1,0 +1,52 @@
+name: Deploy HomeBox
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Management/HomeBox/**"
+      - ".forgejo/workflows/deploy-homebox.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l ./Docker-Critical/Management/HomeBox/homebox.yml
+
+      - name: Create data directories
+        run: |
+          sudo mkdir -p /srv/homebox/data
+          sudo mkdir -p /srv/homebox/config
+          sudo chown -R 568:568 /srv/homebox
+
+      - name: Compare image and config
+        working-directory: ./Docker-Critical/Management/HomeBox
+        env:
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+        run: |
+          # Check if image or config changed; redeploy if needed
+          defined_image=$(grep -m1 'image:' homebox.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' homebox 2>/dev/null || echo "none")
+          checksum=$(sha256sum homebox.yml | awk '{print $1}')
+          old=$(cat /srv/homebox/.homebox_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying HomeBox..."
+            docker compose -p homebox -f homebox.yml down --remove-orphans || true
+            CERTRESOLVER="$CERTRESOLVER" DOMAIN_NAME="$DOMAIN_NAME" docker compose -p homebox -f homebox.yml up -d --force-recreate
+            echo "$checksum" | sudo tee /srv/homebox/.homebox_checksum > /dev/null
+            docker logs homebox --tail 20
+          else
+            echo "No changes detected, skipping redeploy"
+          fi

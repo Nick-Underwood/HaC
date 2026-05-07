@@ -1,0 +1,190 @@
+services:
+  avahi:
+    image: flungo/avahi:latest
+    container_name: avahi
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    volumes:
+      - /srv/avahi:/config
+      - /var/run/dbus:/var/run/dbus:ro
+    labels:
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=avahi
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:latest
+    container_name: homeassistant
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    network_mode: host
+    dns:
+      - ${DNS_SERVER}
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+      - /dev/rfkill:/dev/rfkill
+      - /dev/hci0:/dev/hci0
+    volumes:
+      - /srv/homeassistant/config:/config
+      - /run/dbus:/run/dbus
+      - /var/run/dbus:/var/run/dbus
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.homeassistant.entrypoints=websecure
+      - traefik.http.routers.homeassistant.rule=Host(`ha.${DOMAIN_NAME}`)
+      - traefik.http.routers.homeassistant.service=homeassistant
+      - traefik.http.routers.homeassistant.tls=true
+      - traefik.http.routers.homeassistant.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.homeassistant.tls.domains[0].main=ha.${DOMAIN_NAME}
+      - traefik.http.services.homeassistant.loadbalancer.server.url=http://${HA_HOST_IP}:8123
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=homeassistant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - mariadb
+      - mosquitto
+      - matter-server
+
+  mariadb:
+    image: mariadb:latest
+    container_name: homeassistant-db
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - MYSQL_ROOT_PASSWORD=${HOMEASSISTANT_MARIADB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=homeassistant
+      - MYSQL_USER=homeassistant
+      - MYSQL_PASSWORD=${HOMEASSISTANT_MARIADB_PASSWORD}
+      - TZ=${TZ:-America/Chicago}
+    volumes:
+      - /srv/homeassistant/mariadb:/var/lib/mysql
+    labels:
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=mariadb
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: homeassistant-mqtt
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    volumes:
+      - /srv/homeassistant/mosquitto/config:/mosquitto/config
+      - /srv/homeassistant/mosquitto/data:/mosquitto/data
+      - /srv/homeassistant/mosquitto/log:/mosquitto/log
+    labels:
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=mosquitto
+    healthcheck:
+      test:
+        ["CMD", "mosquitto_sub", "-h", "127.0.0.1", "-t", "$$SYS/#", "-C", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  matter-server:
+    image: ghcr.io/home-assistant-libs/python-matter-server:stable
+    container_name: matter-server
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    command: --storage /data --log-level DEBUG --primary-interface eno1
+    volumes:
+      - /srv/homeassistant/matter:/data
+      - /run/dbus:/run/dbus:ro
+    labels:
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=matter-server
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.socket(); s.connect(('127.0.0.1', 5580)); s.close()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  esphome:
+    image: ghcr.io/esphome/esphome:latest
+    container_name: esphome
+    restart: unless-stopped
+    network_mode: host
+    dns:
+      - ${DNS_SERVER}
+    extra_hosts:
+      - "slzb-06-zigbeebluetooth-e42018.local:${ZIGBEE_COORDINATOR_IP:-127.0.0.1}"
+      - "slzb-06.local:${ZIGBEE_COORDINATOR_IP:-127.0.0.1}"
+      # Add more ESPHome devices as needed:
+      # - "device-name.local:192.168.x.x"
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.esphome.entrypoints=websecure
+      - traefik.http.routers.esphome.rule=Host(`esphome.${DOMAIN_NAME}`)
+      - traefik.http.routers.esphome.service=esphome
+      - traefik.http.routers.esphome.tls=true
+      - traefik.http.routers.esphome.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.esphome.tls.domains[0].main=esphome.${DOMAIN_NAME}
+      - traefik.http.services.esphome.loadbalancer.server.url=http://${HA_HOST_IP}:6052
+      - ha.monitor=true
+      - ha.category=home
+      - ha.compose-file=Docker-Critical/Home/HomeAssistant/homeassistant.yml
+      - ha.service-name=esphome
+    volumes:
+      - /srv/esphome:/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6052/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  homeproxy:
+    external: true

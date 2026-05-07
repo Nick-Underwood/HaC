@@ -1,0 +1,212 @@
+networks:
+  secproxy:
+    external: true
+
+volumes:
+  # Docker named volumes auto-populate from image defaults on first creation.
+  # This matches the official wazuh-docker setup and avoids the bind mount
+  # issue where empty host dirs hide the image's built-in config files.
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-dashboard-custom:
+
+services:
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.indexer
+    container_name: wazuh-indexer
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=security
+      - ha.compose-file=Docker-NonCritical/Security/security.yaml
+      - ha.service-name=wazuh.indexer
+
+    environment:
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    volumes:
+      - /srv/wazuh/indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      - /srv/wazuh/indexer-data:/var/lib/wazuh-indexer
+
+    networks:
+      - secproxy
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.manager
+    container_name: wazuh-manager
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=security
+      - ha.compose-file=Docker-NonCritical/Security/security.yaml
+      - ha.service-name=wazuh.manager
+
+    ports:
+      - "1514:1514"     # Wazuh agent communication
+      - "1515:1515"     # Wazuh agent enrollment
+      - "514:514/udp"   # Syslog
+      - "55000:55000"   # Wazuh API
+
+    environment:
+      - INDEXER_URL=http://wazuh.indexer:9200
+      - INDEXER_USERNAME=${WAZUH_INDEXER_USERNAME:-admin}
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
+      # Disable SSL for internal communication (Traefik handles external TLS)
+      - FILEBEAT_SSL_VERIFICATION_MODE=none
+      - API_USERNAME=${WAZUH_API_USERNAME:-wazuh-wui}
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
+
+    volumes:
+      # Docker named volumes — auto-populated from image on first creation
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      # Custom manager config (no SSL, http indexer) — mounted at the
+      # path the Docker image's init script expects for config injection
+      - /srv/wazuh/manager/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      # Archived logs — NFS (long-term retention, sequential reads only)
+      - /mnt/data/wazuh/archives:/var/ossec/logs/archives
+
+    networks:
+      - secproxy
+
+    depends_on:
+      - wazuh.indexer
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.dashboard
+    container_name: wazuh-dashboard
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=security
+      - ha.compose-file=Docker-NonCritical/Security/security.yaml
+      - ha.service-name=wazuh.dashboard
+      # Traefik routing (SSL termination here)
+      - traefik.enable=true
+      - traefik.http.routers.wazuh.entrypoints=websecure
+      - traefik.http.routers.wazuh.rule=Host(`wazuh.${DOMAIN_NAME}`)
+      - traefik.http.routers.wazuh.service=wazuh
+      - traefik.http.services.wazuh.loadbalancer.server.port=5601
+      - traefik.http.routers.wazuh.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.wazuh.tls.domains[0].main=wazuh.${DOMAIN_NAME}
+      # TODO: Add authelia@docker middleware once Authelia is deployed
+      # - traefik.http.routers.wazuh.middlewares=authelia@docker
+
+    # Remove the OpenSearch Security Dashboards plugin on startup.
+    # Security plugin is disabled on the indexer (no SSL/auth needed internally).
+    # Traefik + Authelia handle external access control.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        if [ -d /usr/share/wazuh-dashboard/plugins/securityDashboards ]; then
+          /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin remove securityDashboards --allow-root 2>/dev/null || true
+        fi
+        /entrypoint.sh
+
+    environment:
+      - OPENSEARCH_HOSTS=http://wazuh.indexer:9200
+      # Disable SSL for internal communication
+      - SERVER_SSL_ENABLED=false
+      # API credentials are provided via the bind-mounted wazuh.yml file.
+      # Do NOT set WAZUH_API_URL, API_USERNAME, or API_PASSWORD here —
+      # the dashboard appends a duplicate hosts: block from env vars,
+      # crashing with "duplicated mapping key".
+
+    volumes:
+      - /srv/wazuh/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      # wazuh.yml generated by deploy workflow with actual API credentials (read-only
+      # to prevent the dashboard from appending a duplicate hosts: block from env vars)
+      - /srv/wazuh/dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+
+    networks:
+      - secproxy
+
+    depends_on:
+      - wazuh.indexer
+      - wazuh.manager
+
+  # One-shot init container: applies 30-day index retention policy to the indexer
+  wazuh.ism-init:
+    image: curlimages/curl:latest
+    container_name: wazuh-ism-init
+    restart: "no"
+    networks:
+      - secproxy
+    volumes:
+      - /srv/wazuh/indexer/ism-policy.json:/ism-policy.json:ro
+      - /srv/wazuh/indexer/apply-ism-policy.sh:/apply-ism-policy.sh:ro
+    entrypoint: ["sh", "/apply-ism-policy.sh"]
+    depends_on:
+      - wazuh.indexer
+    labels:
+      - ha.monitor=true
+      - ha.category=security
+      - ha.compose-file=Docker-NonCritical/Security/security.yaml
+      - ha.service-name=wazuh.ism-init

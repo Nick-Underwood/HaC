@@ -1,0 +1,74 @@
+name: Deploy KaraKeep
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/KaraKeep/**"
+      - ".forgejo/workflows/deploy-karakeep.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy KaraKeep
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          KARAKEEP_DATA: ${{ vars.KARAKEEP_DATA }}
+          MEILI_MASTER_KEY: ${{ secrets.MEILI_MASTER_KEY }}
+          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          INFERENCE_TEXT_MODEL: ${{ vars.INFERENCE_TEXT_MODEL }}
+          INFERENCE_IMAGE_MODEL: ${{ vars.INFERENCE_IMAGE_MODEL }}
+          INFERENCE_CONTEXT_LENGTH: ${{ vars.INFERENCE_CONTEXT_LENGTH }}
+          CRAWLER_VIDEO_DOWNLOAD: ${{ vars.CRAWLER_VIDEO_DOWNLOAD }}
+          MEILI_ADDR: ${{ vars.MEILI_ADDR }}
+          BROWSER_WEB_URL: ${{ vars.BROWSER_WEB_URL }}
+        run: |
+          for var in DOMAIN_NAME MEILI_MASTER_KEY NEXTAUTH_SECRET; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' Docker-Critical/Home/KaraKeep/karakeep.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' karakeep 2>/dev/null || echo "none")
+          checksum=$(sha256sum Docker-Critical/Home/KaraKeep/karakeep.yml | awk '{print $1}')
+          old=$(sudo cat /srv/karakeep/.karakeep_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying KaraKeep..."
+            sudo mkdir -p /srv/karakeep
+            sudo cp Docker-Critical/Home/KaraKeep/karakeep.yml /srv/karakeep/
+            sudo chmod 644 /srv/karakeep/karakeep.yml
+
+            cd /srv/karakeep
+            env DOMAIN_NAME=$DOMAIN_NAME \
+              KARAKEEP_DATA=${KARAKEEP_DATA:-/srv/karakeep/data} \
+              MEILI_MASTER_KEY=$MEILI_MASTER_KEY \
+              NEXTAUTH_SECRET=$NEXTAUTH_SECRET \
+              OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://ollama.$DOMAIN_NAME} \
+              INFERENCE_TEXT_MODEL=${INFERENCE_TEXT_MODEL:-gemma3:4b} \
+              INFERENCE_IMAGE_MODEL=${INFERENCE_IMAGE_MODEL:-gemma3:4b} \
+              INFERENCE_CONTEXT_LENGTH=${INFERENCE_CONTEXT_LENGTH:-8192} \
+              CRAWLER_VIDEO_DOWNLOAD=${CRAWLER_VIDEO_DOWNLOAD:-true} \
+              MEILI_ADDR=${MEILI_ADDR:-http://localhost:7700} \
+              BROWSER_WEB_URL=${BROWSER_WEB_URL:-http://localhost:9222} \
+              docker compose -p karakeep -f karakeep.yml up -d --force-recreate
+
+            sudo sh -c "echo '$checksum' > /srv/karakeep/.karakeep_checksum"
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

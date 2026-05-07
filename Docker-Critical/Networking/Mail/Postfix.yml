@@ -1,0 +1,50 @@
+services:
+  smtp-relay:
+    image: boky/postfix
+    container_name: smtp-relay
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    environment:
+      HOSTNAME: ${SMTP_HOSTNAME_POSTFIX}
+      DOMAIN: ${DOMAIN_NAME}
+      SENDER_DOMAIN: ${SENDER_DOMAIN}
+      ALLOWED_SENDER_DOMAINS: ${ALLOWED_SENDER_DOMAINS}
+      TZ: ${TZ}
+
+      # Mailtrap SMTP
+      RELAYHOST: ${SMTP_RELAYHOST}
+      RELAYHOST_USERNAME: ${SMTP_USERNAME}
+      RELAYHOST_PASSWORD: ${SMTP_PASSWORD}
+
+      # Postfix core identity
+      POSTFIX_myhostname: ${SMTP_HOSTNAME_POSTFIX}
+      POSTFIX_mydomain: ${DOMAIN_NAME}
+      POSTFIX_myorigin: ${DOMAIN_NAME}
+      POSTFIX_mynetworks: "0.0.0.0/0"
+
+      # Upstream relay
+      POSTFIX_relayhost: "[${SMTP_RELAYHOST}]:587"
+
+      # TLS
+      POSTFIX_smtp_use_tls: "yes"
+      POSTFIX_smtp_tls_security_level: may
+      POSTFIX_smtp_tls_CAfile: /etc/ssl/certs/ca-certificates.crt
+      POSTFIX_smtp_tls_note_starttls_offer: "yes"
+
+      # SASL (Mailtrap requires this)
+      POSTFIX_smtp_sasl_auth_enable: "yes"
+      POSTFIX_smtp_sasl_security_options: "noanonymous"
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=networking"
+      - "ha.compose-file=Docker-Critical/Networking/Mail/Postfix.yml"
+      - "ha.service-name=smtp-relay"
+
+    volumes:
+      - /srv/smtp-relay/spool:/var/spool/postfix
+      - /mnt/hdd/logs/smtp-relay:/var/log/postfix
+
+networks:
+  toolsproxy:
+    external: true

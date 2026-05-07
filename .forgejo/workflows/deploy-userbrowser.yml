@@ -1,0 +1,76 @@
+name: Deploy UserBrowser
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/UserBrowser/**"
+      - ".forgejo/workflows/deploy-userbrowser.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/UserBrowser/userbrowser.yml"
+
+      - name: Deploy UserBrowser
+        working-directory: "./Docker-NonCritical/Tools/UserBrowser"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          SEARX_INTERNAL_URL: ${{ vars.SEARX_INTERNAL_URL || 'http://searx:8080' }}
+          SEARX_DIRECT_INTERNAL_URL: ${{ vars.SEARX_DIRECT_INTERNAL_URL || 'http://searx:8080' }}
+          PROWLARR_URL: ${{ vars.PROWLARR_URL }}
+          PROWLARR_KEY: ${{ secrets.PROWLARR_KEY }}
+          FLARESOLVERR_URL: ${{ vars.FLARESOLVERR_URL }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER SEARX_INTERNAL_URL; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p ~/.hac-noncritical
+
+          defined_image=$(grep -m1 'image:' userbrowser.yml | awk '{print $2}' | sed "s|\${DOMAIN_NAME}|$DOMAIN_NAME|g")
+          compose_checksum=$(sha256sum userbrowser.yml | awk '{print $1}')
+          old_compose=$(cat ~/.hac-noncritical/.userbrowser_checksum 2>/dev/null || echo "")
+
+          echo "Defined image: $defined_image"
+          echo "Compose checksum: $compose_checksum vs $old_compose"
+
+          # Always login and pull to detect new image pushes
+          echo "${{ secrets.FORGEJO_REGISTRY_PASSWORD }}" | \
+            docker login "git.${DOMAIN_NAME}" -u "${{ vars.FORGEJO_REGISTRY_USER }}" --password-stdin
+
+          docker pull "$defined_image"
+
+          new_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$defined_image" 2>/dev/null || docker inspect --format='{{.Id}}' "$defined_image")
+          old_digest=$(cat ~/.hac-noncritical/.userbrowser_image_digest 2>/dev/null || echo "")
+
+          echo "Image digest: $new_digest vs $old_digest"
+
+          if [ "$compose_checksum" != "$old_compose" ] || [ "$new_digest" != "$old_digest" ]; then
+            echo "Redeploying UserBrowser (compose changed: $([ "$compose_checksum" != "$old_compose" ] && echo yes || echo no), image changed: $([ "$new_digest" != "$old_digest" ] && echo yes || echo no))..."
+
+            docker compose -p userbrowser -f userbrowser.yml down --remove-orphans || true
+            docker compose -p userbrowser -f userbrowser.yml up -d --force-recreate
+
+            echo "$compose_checksum" > ~/.hac-noncritical/.userbrowser_checksum
+            echo "$new_digest" > ~/.hac-noncritical/.userbrowser_image_digest
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

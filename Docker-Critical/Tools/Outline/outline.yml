@@ -1,0 +1,228 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  outline:
+    image: outlinewiki/outline:latest
+    container_name: outline
+    restart: unless-stopped
+    depends_on:
+      postgres-outline:
+        condition: service_healthy
+      redis-outline:
+        condition: service_healthy
+      minio-outline-init:
+        condition: service_completed_successfully
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    environment:
+      - NODE_ENV=production
+      - SECRET_KEY=${OUTLINE_SECRET_KEY}
+      - UTILS_SECRET=${OUTLINE_UTILS_SECRET}
+      - URL=https://docs.${DOMAIN_NAME}
+      - PORT=3000
+      # Database — URL pre-encoded by deploy workflow (avoids special-char issues)
+      - DATABASE_URL=${OUTLINE_DATABASE_URL}
+      - PGSSLMODE=disable
+      # Redis
+      - REDIS_URL=redis://redis-outline:6379
+      # S3 / MinIO file storage
+      - AWS_ACCESS_KEY_ID=${OUTLINE_MINIO_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${OUTLINE_MINIO_SECRET_KEY}
+      - AWS_REGION=us-east-1
+      - AWS_S3_UPLOAD_BUCKET_NAME=outline
+      - AWS_S3_UPLOAD_BUCKET_URL=https://minio-outline.${DOMAIN_NAME}
+      - AWS_S3_FORCE_PATH_STYLE=true
+      - AWS_S3_ACL=private
+      # OIDC (Authentik)
+      - OIDC_CLIENT_ID=${OUTLINE_OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OUTLINE_OIDC_CLIENT_SECRET}
+      - OIDC_AUTH_URI=https://authentik.${DOMAIN_NAME}/application/o/authorize/
+      - OIDC_TOKEN_URI=https://authentik.${DOMAIN_NAME}/application/o/token/
+      - OIDC_USERINFO_URI=https://authentik.${DOMAIN_NAME}/application/o/userinfo/
+      - OIDC_DISPLAY_NAME=Authentik
+      - OIDC_SCOPES=openid profile email
+      # Rate limiting
+      - RATE_LIMITER_ENABLED=true
+      - RATE_LIMITER_REQUESTS=1000
+      - RATE_LIMITER_DURATION_WINDOW=60
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/Outline/outline.yml
+      - ha.service-name=outline
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.docker.network=toolsproxy
+      - traefik.http.routers.outline.entrypoints=websecure
+      - traefik.http.routers.outline.rule=Host(`docs.${DOMAIN_NAME}`)
+      - traefik.http.routers.outline.service=outline
+      - traefik.http.services.outline.loadbalancer.server.port=3000
+      - traefik.http.routers.outline.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.outline.tls.domains[0].main=docs.${DOMAIN_NAME}
+
+    networks:
+      - toolsproxy
+
+  minio-outline:
+    image: minio/minio:latest
+    container_name: minio-outline
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+          cpus: '0.2'
+
+    environment:
+      - MINIO_ROOT_USER=${OUTLINE_MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${OUTLINE_MINIO_SECRET_KEY}
+      - MINIO_BROWSER_REDIRECT_URL=https://minio-outline-console.${DOMAIN_NAME}
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/Outline/outline.yml
+      - ha.service-name=minio-outline
+      # Traefik routing — MinIO S3 API
+      - traefik.enable=true
+      - traefik.docker.network=toolsproxy
+      - traefik.http.routers.minio-outline.entrypoints=websecure
+      - traefik.http.routers.minio-outline.rule=Host(`minio-outline.${DOMAIN_NAME}`)
+      - traefik.http.routers.minio-outline.service=minio-outline
+      - traefik.http.services.minio-outline.loadbalancer.server.port=9000
+      - traefik.http.routers.minio-outline.tls.certresolver=${CERTRESOLVER}
+      # MinIO console
+      - traefik.http.routers.minio-outline-console.entrypoints=websecure
+      - traefik.http.routers.minio-outline-console.rule=Host(`minio-outline-console.${DOMAIN_NAME}`)
+      - traefik.http.routers.minio-outline-console.service=minio-outline-console
+      - traefik.http.services.minio-outline-console.loadbalancer.server.port=9001
+      - traefik.http.routers.minio-outline-console.tls.certresolver=${CERTRESOLVER}
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/minio-outline:/data
+
+  minio-outline-init:
+    image: minio/mc:latest
+    container_name: minio-outline-init
+    restart: on-failure
+    depends_on:
+      minio-outline:
+        condition: service_healthy
+    environment:
+      - MINIO_ACCESS_KEY=${OUTLINE_MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${OUTLINE_MINIO_SECRET_KEY}
+    entrypoint: |
+      /bin/sh -c "
+        mc alias set minio http://minio-outline:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY;
+        mc mb --ignore-existing minio/outline;
+        mc anonymous set none minio/outline;
+        exit 0;
+      "
+
+    networks:
+      - toolsproxy
+
+  postgres-outline:
+    image: postgres:15
+    container_name: postgres-outline
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+          cpus: '0.2'
+
+    environment:
+      - POSTGRES_USER=outline
+      - POSTGRES_PASSWORD=${OUTLINE_DB_PASSWORD}
+      - POSTGRES_DB=outline
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outline -d outline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/Outline/outline.yml
+      - ha.service-name=postgres-outline
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/postgres-outline:/var/lib/postgresql/data
+
+  redis-outline:
+    image: redis:7
+    container_name: redis-outline
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+        reservations:
+          memory: 32M
+          cpus: '0.1'
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+    labels:
+      # Home Assistant monitoring
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-Critical/Tools/Outline/outline.yml
+      - ha.service-name=redis-outline
+
+    networks:
+      - toolsproxy
+
+    volumes:
+      - /srv/redis-outline:/data

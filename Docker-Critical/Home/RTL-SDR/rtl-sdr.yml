@@ -1,0 +1,26 @@
+services:
+  rtl_433:
+    image: hertzg/rtl_433:latest
+    container_name: rtl_433
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - /srv/rtl-sdr/config:/config
+      - /srv/rtl-sdr/data:/data
+    command: >
+      -c /config/rtl_433.conf
+      -F mqtt://${MQTT_HOST:-homeassistant-mqtt}:${MQTT_PORT:-1883},user=${MQTT_USER:-mqtt},pass=${MQTT_PASSWORD:-mqtt},retain=1,devices=homeassistant/devices/[/model][/id],events=homeassistant/events/[/model][/id],states=homeassistant/states/[/model][/id]
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=home"
+      - "ha.compose-file=Docker-Critical/Home/RTL-SDR/rtl-sdr.yml"
+      - "ha.service-name=rtl_433"
+
+networks:
+  homeproxy:
+    external: true

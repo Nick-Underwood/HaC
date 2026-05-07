@@ -1,0 +1,30 @@
+services:
+  homebox:
+    image: ghcr.io/sysadminsmedia/homebox:latest
+    container_name: homebox
+    environment:
+      - TZ=America/Chicago
+      - HBOX_LOG_LEVEL=info
+      - HBOX_LOG_FORMAT=text
+      - HBOX_WEB_MAX_UPLOAD_SIZE=10
+    networks:
+      - homeproxy
+    labels:
+      - traefik.http.routers.homebox.entrypoints=websecure
+      - traefik.http.routers.homebox.rule=Host(`homebox.${DOMAIN_NAME}`)
+      - traefik.http.routers.homebox.service=homebox
+      - traefik.http.services.homebox.loadbalancer.server.port=7745
+      - traefik.http.routers.homebox.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.homebox.tls.domains[0].main=homebox.${DOMAIN_NAME}
+      - traefik.enable=true
+      - "ha.monitor=true"
+      - "ha.category=management"
+      - "ha.compose-file=Docker-Critical/Management/HomeBox/homebox.yml"
+      - "ha.service-name=homebox"
+    restart: unless-stopped
+    volumes:
+      - /srv/homebox/data:/data
+networks:
+  homeproxy:
+    external: True
+    name: homeproxy
