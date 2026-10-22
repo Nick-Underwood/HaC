@@ -1,0 +1,89 @@
+:root {
+  --sage-900: #2f3b32;
+  --sage-800: #3b4a3f;
+  --sage-700: #4d5e52;
+  --sage-600: #5f7465;
+  --sage-500: #6f8777;
+  --sage-300: #9fb3a5;
+  --sage-200: #c5d1c9;
+  --sage-100: #e4eae6;
+  --accent: #c3a66c;
+  --bg: #f6f8f6;
+}
+
+body {
+  background-color: var(--bg);
+  color: #1f2621;
+}
+
+.navbar.navbar-dark.bg-dark {
+  background-color: var(--sage-900) !important;
+}
+
+.navbar-dark .navbar-brand,
+.navbar-dark .navbar-nav .nav-link {
+  color: var(--sage-100) !important;
+}
+
+.navbar-dark .navbar-nav .nav-link:hover,
+.navbar-dark .navbar-nav .nav-link:focus {
+  color: white !important;
+}
+
+.btn-primary,
+.btn-primary:hover,
+.btn-primary:focus {
+  background-color: var(--sage-700);
+  border-color: var(--sage-700);
+  color: #f9fbfa;
+}
+
+.btn-secondary {
+  background-color: var(--sage-300);
+  border-color: var(--sage-300);
+  color: #1f2621;
+}
+
+a,
+.btn-link {
+  color: var(--sage-700);
+}
+
+a:hover,
+.btn-link:hover {
+  color: var(--sage-900);
+}
+
+.card {
+  border-color: var(--sage-200);
+  background-color: white;
+}
+
+.card-header {
+  background-color: var(--sage-100);
+  border-bottom-color: var(--sage-200);
+}
+
+.table thead th {
+  background-color: var(--sage-100);
+  border-bottom-color: var(--sage-200);
+}
+
+.badge-primary,
+.bg-primary {
+  background-color: var(--sage-700) !important;
+}
+
+.list-group-item.active {
+  background-color: var(--sage-700);
+  border-color: var(--sage-700);
+}
+
+.progress-bar {
+  background-color: var(--sage-600);
+}
+
+.footer {
+  background-color: var(--sage-900);
+  color: var(--sage-100);
+}

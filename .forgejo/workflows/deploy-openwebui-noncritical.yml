@@ -1,0 +1,69 @@
+name: Deploy Open WebUI (NonCritical)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Automation/AI/openwebui.yml"
+      - ".forgejo/workflows/deploy-openwebui-noncritical.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Automation/AI/openwebui.yml"
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login git.u-acres.com -u nicholas --password-stdin
+      - name: Deploy Open WebUI (NonCritical)
+        working-directory: "./Docker-NonCritical/Automation/AI"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          OPENWEBUI_DEFAULT_MODELS: ${{ vars.OPENWEBUI_DEFAULT_MODELS || 'qwen2.5-coder:14b,deepseek-chat' }}
+          OPENWEBUI_OPENAI_API_BASE_URL: ${{ vars.OPENWEBUI_OPENAI_API_BASE_URL || 'https://api.deepseek.com/v1' }}
+          OPENWEBUI_RAG_EMBEDDING_MODEL: ${{ vars.OPENWEBUI_RAG_EMBEDDING_MODEL || 'nomic-embed-text' }}
+          OPENWEBUI_OAUTH_CLIENT_ID: ${{ vars.OPENWEBUI_OAUTH_CLIENT_ID }}
+          OPENWEBUI_OAUTH_CLIENT_SECRET: ${{ secrets.OPENWEBUI_OAUTH_CLIENT_SECRET }}
+          OPENWEBUI_DEEPSEEK_API_KEY: ${{ secrets.OPENWEBUI_DEEPSEEK_API_KEY }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER OPENWEBUI_OAUTH_CLIENT_ID OPENWEBUI_OAUTH_CLIENT_SECRET OPENWEBUI_DEEPSEEK_API_KEY; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://ollama.$DOMAIN_NAME}
+          export OLLAMA_BASE_URL
+
+          defined_image=$(grep -m1 'image:' openwebui.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' open-webui 2>/dev/null || echo "none")
+          checksum=$(sha256sum openwebui.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.openwebui_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Open WebUI (NonCritical)..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p openwebui down --remove-orphans || true
+            docker compose -p openwebui -f openwebui.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.openwebui_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi

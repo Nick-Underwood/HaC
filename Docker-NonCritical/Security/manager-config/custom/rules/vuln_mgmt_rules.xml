@@ -1,0 +1,29 @@
+<!--
+  Vulnerability-management escalation rules.
+  Wazuh emits vulnerability findings at level 7-8 by default, below the
+  watchdog's L12+ ntfy-forward threshold. These rules promote HIGH/CRITICAL
+  CVSS findings (>= 7.0) to level 12/15 so they surface on the ntfy topic
+  and in the morning digest.
+
+  Match is on the vulnerability group + extracted CVSS score. The score is
+  present in the alert JSON as vulnerability.cvss.cvss3.score (or cvss2.score).
+-->
+<group name="vulnerability-detector,vuln-mgmt,escalation,">
+
+  <!-- CRITICAL: CVSS >= 9.0 -->
+  <rule id="100500" level="15">
+    <if_group>vulnerability-detector</if_group>
+    <field name="vulnerability.cvss.cvss3.score" type="pcre2">^(9\.[0-9]|10\.0)$</field>
+    <description>CRITICAL CVE $(vulnerability.cve) on $(agent.name): $(vulnerability.package.name) $(vulnerability.package.version) [CVSS $(vulnerability.cvss.cvss3.score)]</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <!-- HIGH: CVSS 7.0 - 8.9 -->
+  <rule id="100501" level="12">
+    <if_group>vulnerability-detector</if_group>
+    <field name="vulnerability.cvss.cvss3.score" type="pcre2">^(8\.[0-9]|7\.[0-9])$</field>
+    <description>HIGH CVE $(vulnerability.cve) on $(agent.name): $(vulnerability.package.name) $(vulnerability.package.version) [CVSS $(vulnerability.cvss.cvss3.score)]</description>
+    <options>no_full_log</options>
+  </rule>
+
+</group>

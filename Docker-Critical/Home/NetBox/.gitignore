@@ -1,0 +1,9 @@
+# Secrets — never commit. Materialized from vaultwarden by scripts/populate-secrets.sh
+secrets/*.txt
+secrets/*.b64
+
+# Branch-tracked copies (legacy; pinned to a tagged release, not live)
+secrets/netbox_secret_key.branchtracked.txt
+secrets/netbox_api_token_peppers.branchtracked.txt
+secrets/netbox_db_password.branchtracked.txt
+secrets/netbox_smtp_password.branchtracked.txt

@@ -1,0 +1,36 @@
+services:
+  lidarr:
+    image: git.u-acres.com/nicholas/linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.lidarr.entrypoints=websecure
+      - traefik.http.routers.lidarr.rule=Host(`lidarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.lidarr.service=lidarr
+      - traefik.http.services.lidarr.loadbalancer.server.port=8686
+      - traefik.http.routers.lidarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.lidarr.tls.domains[0].main=lidarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/lidarr/config:/config
+      - /mnt/data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8686/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 200
+networks:
+  mediaproxy:
+    external: true

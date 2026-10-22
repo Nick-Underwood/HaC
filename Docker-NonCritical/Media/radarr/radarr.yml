@@ -1,0 +1,36 @@
+services:
+  radarr:
+    image: git.u-acres.com/nicholas/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.radarr.entrypoints=websecure
+      - traefik.http.routers.radarr.rule=Host(`radarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.radarr.service=radarr
+      - traefik.http.services.radarr.loadbalancer.server.port=7878
+      - traefik.http.routers.radarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.radarr.tls.domains[0].main=radarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/radarr/config:/config
+      - /mnt/data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7878/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 200
+networks:
+  mediaproxy:
+    external: true

@@ -1,0 +1,69 @@
+name: Deploy Plex
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Media/Plex/**"
+      - ".forgejo/workflows/deploy-plex.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-noncritical
+
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Plex compose file exists
+        run: |
+          ls -l "./Docker-NonCritical/Media/Plex/plex.yml"
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login git.u-acres.com -u nicholas --password-stdin
+      - name: Compare image and config
+        working-directory: "./Docker-NonCritical/Media/Plex"
+        env:
+          PUID: ${{ vars.PUID }}
+          PGID: ${{ vars.PGID }}
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          PLEX_CLAIM: ${{ secrets.PLEX_CLAIM }}
+        run: |
+          # Extract defined image
+          defined_image=$(grep -m1 'image:' plex.yml | awk '{print $2}')
+
+          # Extract running image
+          running_image=$(docker inspect -f '{{.Config.Image}}' plex 2>/dev/null || echo "none")
+
+          # Compute checksum of compose file
+          checksum=$(sha256sum plex.yml | awk '{print $1}')
+          old=$(cat .plex_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Plex"
+
+            # Deploy via dockhand (fleet runtime helper)
+            export PUID PGID TZ DOMAIN_NAME CERTRESOLVER PLEX_CLAIM
+            bash -lc "dockhand recreate plex plex -f plex.yml"
+            bash -lc "dockhand health plex" 
+
+            # Save checksum
+            echo "$checksum" > .plex_checksum
+          else
+            echo "No redeploy needed"
+          fi

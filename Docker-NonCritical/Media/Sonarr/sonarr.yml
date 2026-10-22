@@ -1,0 +1,38 @@
+services:
+  sonarr:
+    image: git.u-acres.com/nicholas/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - DOCKER_MODS=ghcr.io/gilbn/theme.park:sonarr
+      - TP_THEME=organizr
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sonarr.entrypoints=websecure
+      - traefik.http.routers.sonarr.rule=Host(`sonarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.sonarr.service=sonarr
+      - traefik.http.services.sonarr.loadbalancer.server.port=8989
+      - traefik.http.routers.sonarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.sonarr.tls.domains[0].main=sonarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/sonarr/config:/config
+      - /mnt/data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8989/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 200
+networks:
+  mediaproxy:
+    external: true

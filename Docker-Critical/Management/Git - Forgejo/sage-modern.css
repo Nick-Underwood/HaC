@@ -1,0 +1,163 @@
+:root {
+  --color-primary: #8cae91;
+  --color-primary-dark: #6e8f74;
+  --color-secondary: #f4f4f4;
+  --color-text: #2e2e2e;
+  --color-bg: #ffffff;
+  --color-border: #d0d0d0;
+  --color-hover: #c3d7c9;
+}
+
+/* Backgrounds */
+body,
+.ui.segment {
+  background-color: var(--color-bg) !important;
+  color: var(--color-text) !important;
+}
+
+/* Navigation Bar */
+.navbar,
+.ui.menu,
+.ui.top.menu,
+.ui.secondary.menu {
+  background-color: var(--color-primary) !important;
+  border-color: var(--color-primary-dark) !important;
+}
+
+.navbar .item,
+.ui.menu .item,
+.ui.menu a.item {
+  color: white !important;
+}
+
+.navbar .item:hover,
+.navbar .item.active,
+.ui.menu .item:hover,
+.ui.menu .item.active,
+.ui.menu a.item:hover,
+.ui.menu a.item.active {
+  background-color: var(--color-primary-dark) !important;
+  color: white !important;
+}
+
+/* Dropdowns */
+.ui.dropdown,
+.ui.dropdown > .menu {
+  background-color: white !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+.ui.dropdown > .menu > .item {
+  color: var(--color-text) !important;
+}
+
+.ui.dropdown > .menu > .item:hover {
+  background-color: var(--color-hover) !important;
+  color: var(--color-text) !important;
+}
+
+.ui.dropdown > .menu > .item.selected {
+  background-color: var(--color-primary) !important;
+  color: white !important;
+}
+
+/* Links */
+a {
+  color: var(--color-primary-dark) !important;
+}
+
+a:hover {
+  color: var(--color-primary) !important;
+}
+
+/* Buttons */
+.ui.button {
+  border: 1px solid var(--color-border) !important;
+  color: var(--color-text) !important;
+}
+
+.ui.primary.button {
+  background-color: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: white !important;
+}
+
+.ui.primary.button:hover {
+  background-color: var(--color-primary-dark) !important;
+  border-color: var(--color-primary-dark) !important;
+}
+
+/* Form Elements */
+.ui.input,
+input[type="text"],
+input[type="email"],
+input[type="password"],
+textarea,
+select {
+  border: 1px solid var(--color-border) !important;
+  color: var(--color-text) !important;
+  background-color: white !important;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--color-primary) !important;
+  background-color: white !important;
+}
+
+/* Labels & Tags */
+.ui.label {
+  background-color: var(--color-hover) !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--color-primary) !important;
+}
+
+/* Tabular Menu */
+.ui.tabular.menu .item.active {
+  border-bottom-color: var(--color-primary) !important;
+  color: var(--color-primary) !important;
+}
+
+.ui.tabular.menu .item {
+  color: var(--color-text) !important;
+}
+
+/* Tables */
+table,
+.ui.table {
+  border-color: var(--color-border) !important;
+}
+
+.ui.table tbody tr:hover {
+  background-color: var(--color-hover) !important;
+}
+
+/* Messages & Alerts */
+.ui.message {
+  border-left: 4px solid var(--color-primary) !important;
+}
+
+/* Footer */
+.footer {
+  background-color: var(--color-primary) !important;
+  color: white !important;
+}
+
+.footer a {
+  color: white !important;
+}
+
+/* Code blocks */
+code,
+.ui.code {
+  background-color: var(--color-secondary) !important;
+  color: #d32f2f !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+pre {
+  background-color: var(--color-secondary) !important;
+  border: 1px solid var(--color-border) !important;
+  color: var(--color-text) !important;
+}

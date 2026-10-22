@@ -1,0 +1,221 @@
+# deploy-bump: 2026-08-07T16:40:07Z - force redeploy to populate HASS_TOKEN from secret
+services:
+  hermes-gateway:
+    # SHTF: image is mirrored into the local Forgejo registry (see .forgejo/workflows/mirror-hermes.yml)
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-gateway
+    restart: unless-stopped
+    # SHTF: don't depend on registry reachability for restarts
+    pull_policy: if_not_present
+    # Hermes image rejects `--user`; run as root and pass host UID/GID so files
+    # land owned by the host user (PUID/PGID aliases are supported).
+    # The image's s6 supervisor runs the gateway (gateway-default service)
+    # and dashboard. This command keeps the container foreground alive;
+    # the real gateway daemon is supervised by s6 (see gateway-default/run).
+    # Do NOT use `hermes gateway run` here — that double-spawns the gateway
+    # alongside s6 and trips the profile lock.
+    command: ["sleep", "infinity"]
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 524288
+    environment:
+      PUID: 1000
+      PGID: 1000
+      HERMES_HOME: /data
+      HERMES_PROFILE: default
+      # Bitwarden CLI (vault backend): login state lives on the persistent
+      # /data bind (jarvis profile home), NOT the anonymous /opt/data
+      # volume the s6 service scripts set as HOME (wiped on every redeploy).
+      # Hermes' vault backend passes this var through to `bw` by design.
+      BITWARDENCLI_APPDATA_DIR: "/data/profiles/jarvis/home/.config/Bitwarden CLI"
+      # Local-only stack: Ollama on Windows desktop + HAOS
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      HASS_URL: ${HASS_URL}
+      HASS_TOKEN: ${HASS_TOKEN}
+      # API server for local WebUI / desktop app / HA integrations
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_KEY}
+      API_SERVER_CORS_ORIGINS: "[\"https://chat.u-acres.com\",\"http://192.168.19.19:3000\",\"http://192.168.19.19\",\"https://hermes.u-acres.com\"]"
+      # Mnemosyne Sync configuration
+      MNEMOSYNE_SYNC_TOKEN: ${MNEMOSYNE_SYNC_API_KEY}
+      MNEMOSYNE_SYNC_REMOTE_URL: http://memory.u-acres.com
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8642/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - /srv/hermes:/data
+    networks:
+      - aiproxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hermes-api.rule=Host(`${HERMES_PUBLIC_URL}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.hermes-api.entrypoints=websecure"
+      - "traefik.http.routers.hermes-api.tls=true"
+      - "traefik.http.routers.hermes-api.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-api.tls.domains[0].main=${HERMES_PUBLIC_URL}"
+      - "traefik.http.routers.hermes-api.middlewares=lan-only"
+      # /api/* is the DASHBOARD SPA's API surface (config, analytics, cron,
+      # auth/ws, ...). The gateway's OpenAI-compatible API lives at /v1 and
+      # its websocket at /ws — those stay on hermes-v1/hermes-gateway.
+      - "traefik.http.routers.hermes-api.service=hermes-dashboard"
+      - "traefik.http.routers.hermes-api.priority=50"
+      - "traefik.http.routers.hermes-v1.rule=Host(`hermes.u-acres.com`) && PathPrefix(`/v1`)"
+      - "traefik.http.routers.hermes-v1.entrypoints=websecure"
+      - "traefik.http.routers.hermes-v1.tls=true"
+      - "traefik.http.routers.hermes-v1.tls.certresolver=cloudflare"
+      - "traefik.http.routers.hermes-v1.tls.domains[0].main=hermes.u-acres.com"
+      - "traefik.http.routers.hermes-v1.middlewares=lan-only"
+      - "traefik.http.routers.hermes-v1.service=hermes-api"
+      - "traefik.http.services.hermes-api.loadbalancer.server.port=8642"
+      - "traefik.http.routers.hermes-gateway.rule=Host(`${HERMES_PUBLIC_URL}`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.hermes-gateway.entrypoints=websecure"
+      - "traefik.http.routers.hermes-gateway.tls=true"
+      - "traefik.http.routers.hermes-gateway.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-gateway.tls.domains[0].main=${HERMES_PUBLIC_URL}"
+      - "traefik.http.routers.hermes-gateway.middlewares=lan-only"
+      - "traefik.http.routers.hermes-gateway.service=hermes-gateway"
+      - "traefik.http.services.hermes-gateway.loadbalancer.server.port=8642"
+
+  hermes-dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    # SHTF: don't depend on registry reachability for restarts
+    pull_policy: if_not_present
+    # Hermes image rejects `--user`; run as root and pass host UID/GID so files
+    # land owned by the host user (PUID/PGID aliases are supported).
+    environment:
+      PUID: 1000
+      PGID: 1000
+      HERMES_HOME: /data
+      HERMES_PROFILE: default
+      # Prevent this dashboard-only container from spawning a competing gateway
+      # process when an operator runs `hermes gateway run` here instead of
+      # inside hermes-gateway. The multiplexer already serves all profiles; a
+      # second gateway --replace fight causes crash-restart storms. (reversible)
+      HERMES_GATEWAY_NO_SUPERVISE: "1"
+      # Bitwarden CLI appdata — see hermes-gateway above.
+      BITWARDENCLI_APPDATA_DIR: "/data/profiles/jarvis/home/.config/Bitwarden CLI"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_PUBLIC_URL: "https://${HERMES_PUBLIC_URL}"
+      # Dashboard authenticates to the gateway API server (HERMES_API_KEY must equal gateway API_SERVER_KEY).
+      HERMES_API_KEY: "${HERMES_API_KEY}"
+      # Required so the dashboard may bind 0.0.0.0 (non-loopback) — OIDC is the
+      # go-forward auth (Authentik fronts the edge as the second factor).
+      HERMES_DASHBOARD_OIDC_CLIENT_ID: "MI2vsgYrMlwFF8ko2lAsSka90qsUF0EErmfAH4AH"
+      HERMES_DASHBOARD_OIDC_CLIENT_SECRET: "${HERMES_DASHBOARD_OAUTH_CLIENT_SECRET}"
+      HERMES_DASHBOARD_OIDC_ISSUER: "https://${AUTHENTIK_URL}/application/o/hermes-dashboard/"
+      HERMES_DASHBOARD_OIDC_REDIRECT_URI: "https://${HERMES_PUBLIC_URL}/oauth/callback"
+      HERMES_DASHBOARD_OIDC_SCOPES: "openid,profile,email"
+      # Cadu (iOS Hermes client) signs in via /auth/password-login — the bundled
+      # basic provider. Restore dropped by bd36953 (OIDC-only); secrets live in
+      # Forgejo (HERMES_DASHBOARD_BASIC_AUTH_*). Both providers register side by side.
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: "hermes"
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH: "${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH}"
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: "${HERMES_DASHBOARD_BASIC_AUTH_SECRET}"
+    depends_on:
+      hermes-gateway:
+        condition: service_healthy
+    volumes:
+      - /srv/hermes:/data
+    networks:
+      - aiproxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hermes-dashboard.rule=Host(`${HERMES_PUBLIC_URL}`)"
+      - "traefik.http.routers.hermes-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.hermes-dashboard.tls=true"
+      - "traefik.http.routers.hermes-dashboard.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-dashboard.tls.domains[0].main=${HERMES_PUBLIC_URL}"
+      - "traefik.http.routers.hermes-dashboard.middlewares=lan-only"
+      - "traefik.http.services.hermes-dashboard.loadbalancer.server.port=9119"
+      # The SPA's auth + live-update endpoints (/api/auth/ws, /api/auth/me, ...)
+      # are served by the DASHBOARD (9119), not the gateway. hermes-api routes
+      # PathPrefix(/api) to the gateway — that would 404 these. Pin /api/auth
+      # to the dashboard with a higher priority router.
+      - "traefik.http.routers.hermes-dashboard-auth.rule=Host(`${HERMES_PUBLIC_URL}`) && PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.hermes-dashboard-auth.entrypoints=websecure"
+      - "traefik.http.routers.hermes-dashboard-auth.tls=true"
+      - "traefik.http.routers.hermes-dashboard-auth.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-dashboard-auth.tls.domains[0].main=${HERMES_PUBLIC_URL}"
+      - "traefik.http.routers.hermes-dashboard-auth.middlewares=lan-only"
+      - "traefik.http.routers.hermes-dashboard-auth.priority=100"
+      - "traefik.http.routers.hermes-dashboard-auth.service=hermes-dashboard"
+    # Bind 0.0.0.0 so Traefik (on the aiproxy network) can reach it; the
+    # lan-only (IP allowlist) + dashboard basic-auth protect it at the edge; Authentik outpost not provisioned on .51, so hermes uses local auth (SHTF/local-first).
+    # was unreachable from Traefik -> dashboard 404/000 behind the proxy.)
+    command: >-
+      hermes dashboard --host 0.0.0.0 --port 9119 --skip-build
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 524288
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9119/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Mnemosyne Sync Server - Memory sync for Hermes agents (VPN/internal only)
+  mnemosyne-sync:
+    image: python:3.12-slim
+    container_name: mnemosyne-sync
+    restart: unless-stopped
+    expose:
+      - "8765"
+    volumes:
+      - mnemosyne-data:/data
+    environment:
+      - MNEMOSYNE_DATA_DIR=/data
+      - MNEMOSYNE_SYNC_API_KEY=${MNEMOSYNE_SYNC_API_KEY}
+    command: sh -ec "umask 077 && pip install --quiet 'mnemosyne-memory[embeddings,sync]' && exec mnemosyne sync-serve --host 0.0.0.0 --port 8765 --db-path /data/relay.db --initialize-surface --behind-tls-proxy --api-key ${MNEMOSYNE_SYNC_API_KEY}"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      aiproxy:
+        aliases:
+          - mnemosyne-sync.local
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=aiproxy
+      - traefik.http.services.mnemosyne-sync.loadbalancer.server.port=8765
+      - traefik.http.routers.mnemosyne-sync.entrypoints=web
+      - traefik.http.routers.mnemosyne-sync.rule=Host(`memory.u-acres.com`)
+      - traefik.http.routers.mnemosyne-sync.service=mnemosyne-sync
+      - traefik.http.routers.mnemosyne-sync.middlewares=lan-only
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/Hermes/hermes.yml"
+      - "ha.service-name=mnemosyne-sync"
+
+networks:
+  aiproxy:
+    external: true
+
+volumes:
+  mnemosyne-data:

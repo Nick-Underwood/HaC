@@ -1,0 +1,17 @@
+[Unit]
+Description=Forgejo Actions runner (docker-noncritical)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nicholas/.local/share/act_runner
+ExecStart=/home/nicholas/.local/bin/act_runner daemon --config /home/nicholas/.local/share/act_runner/config.yaml
+Restart=always
+RestartSec=10
+# Hardening
+NoNewPrivileges=false
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

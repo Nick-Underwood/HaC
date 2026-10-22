@@ -1,0 +1,10 @@
+[Unit]
+Description=Wazuh manager self-heal watchdog
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/wazuh/scripts/wazuh-watchdog.py selfheal
+# Always succeed so the timer never enters a failed state
+SuccessExitStatus=0 1

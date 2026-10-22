@@ -1,0 +1,34 @@
+# Hermes Agent dashboard routing via file provider.
+#
+# The dashboard container binds 127.0.0.1:9119 with --insecure (loopback-only,
+# no own auth). Traefik's docker provider cannot honor server.address=127.0.0.1,
+# so the backend is declared here explicitly as http://127.0.0.1:9119. Traefik
+# shares the dashboard's network namespace, so 127.0.0.1:9119 is reachable.
+#
+# Authentik forward-auth is the ONLY auth gate (no double-auth): the dashboard
+# itself runs --insecure and trusts the Host:localhost rewrite below.
+
+http:
+  services:
+    hermes-dashboard:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9119
+
+  middlewares:
+    hermes-host-rewrite:
+      headers:
+        customRequestHeaders:
+          Host: localhost
+
+  routers:
+    hermes-dashboard:
+      rule: Host(`hermes.u-acres.com`)
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: cloudflare
+      service: hermes-dashboard
+      middlewares:
+        - authentik@docker
+        - hermes-host-rewrite

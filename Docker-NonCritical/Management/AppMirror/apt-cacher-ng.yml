@@ -1,0 +1,31 @@
+# App mirror: apt-cacher-ng (Debian/Ubuntu package cache)
+#
+# SHTF: caches every .deb the fleet pulls through it so hosts can reinstall
+# packages without internet. Clients point apt at the proxy:
+#   /etc/apt/apt.conf.d/02proxy -> Acquire::http::Proxy "http://192.168.19.52:3142";
+#
+# This is a CACHE, not a full mirror: a package is available offline only after
+# it has been pulled through the proxy at least once. Populate by running
+# `apt update && apt upgrade` on each host through the proxy.
+#
+# Runs on docker-noncritical (.52); cache storage is on redundant TrueNAS media.
+services:
+  apt-cacher-ng:
+    image: git.u-acres.com/nicholas/sameersbn/apt-cacher-ng:latest
+    container_name: apt-cacher-ng
+    restart: unless-stopped
+    ports:
+      - "3142:3142"
+    volumes:
+      - /mnt/data/apt-cacher-ng:/var/cache/apt-cacher-ng
+    environment:
+      - TZ=America/Chicago
+      # Cache dir is on a CIFS share mounted with uid=0/gid=0 (nounix), so
+      # only UID 0 can write. Run the daemon as root; storage is 2.5T of
+      # redundant TrueNAS capacity vs ~20G free on local disk.
+      - APT_CACHER_NG_USER=root
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O /dev/null http://127.0.0.1:3142/acng-report.html || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

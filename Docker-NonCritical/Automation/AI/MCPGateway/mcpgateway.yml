@@ -1,0 +1,177 @@
+services:
+  # IBM ContextForge MCP Gateway - Central gateway for all MCP servers
+  mcp-gateway:
+    image: git.u-acres.com/nicholas/ibm/mcp-context-forge:latest
+    container_name: mcp-gateway
+    restart: unless-stopped
+    networks:
+      - mcpnet
+      - aiproxy
+    ports:
+      - "4444:4444"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${MCP_DB_USERNAME:-mcpuser}:${MCP_DB_PASSWORD}@mcp-postgres:5432/mcpgateway
+      - REDIS_URL=redis://redis:6379
+      - MCPGATEWAY_HOST=0.0.0.0
+      - MCPGATEWAY_PORT=4444
+      - MCPGATEWAY_UI_ENABLED=true
+      - MCPGATEWAY_ADMIN_API_ENABLED=true
+      - PLUGINS_ENABLED=true
+      - GUNICORN_PRELOAD_APP=false
+      - GUNICORN_WORKERS=1
+      - WEB_CONCURRENCY=1
+      - SECURE_COOKIES=false
+      - SSRF_PROTECTION_ENABLED=false
+      - SSRF_DNS_FAIL_CLOSED=false
+      - AUTO_REFRESH_SERVERS=false
+      # Token security
+      - JWT_SECRET_KEY=${MCP_JWT_SECRET_KEY}
+      - AUTH_ENCRYPTION_SECRET=${MCP_AUTH_ENCRYPTION_SECRET}
+      # Authentik OIDC SSO
+      - SSO_ENABLED=true
+      - SSO_AUTO_CREATE_USERS=true
+      - SSO_PRESERVE_ADMIN_AUTH=true
+      - SSO_GENERIC_ENABLED=true
+      - SSO_GENERIC_PROVIDER_ID=authentik
+      - SSO_GENERIC_DISPLAY_NAME=Authentik
+      - SSO_GENERIC_CLIENT_ID=${MCP_OIDC_CLIENT_ID}
+      - SSO_GENERIC_CLIENT_SECRET=${MCP_OIDC_CLIENT_SECRET}
+      - SSO_GENERIC_AUTHORIZATION_URL=https://authentik.${DOMAIN_NAME}/application/o/authorize/
+      - SSO_GENERIC_TOKEN_URL=https://authentik.${DOMAIN_NAME}/application/o/token/
+      - SSO_GENERIC_USERINFO_URL=https://authentik.${DOMAIN_NAME}/application/o/userinfo/
+      - SSO_GENERIC_ISSUER=https://authentik.${DOMAIN_NAME}/application/o/mcp-gateway/
+      - SSO_GENERIC_JWKS_URI=https://authentik.${DOMAIN_NAME}/application/o/mcp-gateway/jwks/
+      - SSO_GENERIC_SCOPE=openid profile email
+      - APP_DOMAIN=https://mcp.${DOMAIN_NAME}
+      - ALLOWED_ORIGINS=https://mcp.${DOMAIN_NAME}
+      # Password security (required by config validation)
+      - BASIC_AUTH_PASSWORD=${BASIC_AUTH_PASSWORD}
+      - PLATFORM_ADMIN_PASSWORD=${PLATFORM_ADMIN_PASSWORD}
+      - DEFAULT_USER_PASSWORD=${DEFAULT_USER_PASSWORD}
+      - VALIDATION_DANGEROUS_HTML_PATTERN=<(script|iframe|object|embed|link|meta|base|form|img|svg|video|audio|source|track|area|map|canvas|applet|frame|frameset|html|head|body|style)\b|<\/(script|iframe|object|embed|link|meta|base|form|img|svg|video|audio|source|track|area|map|canvas|applet|frame|frameset|html|head|body|style)>
+    depends_on:
+      mcp-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mcp-db-compat:
+        condition: service_completed_successfully
+    volumes:
+      - /srv/mcp-gateway/config/gunicorn.config.py:/app/gunicorn.config.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    mem_limit: 4g
+    mem_reservation: 1g
+    cpus: 2.0
+    pids_limit: 200
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=aiproxy
+      - traefik.http.services.mcpgateway.loadbalancer.server.port=4444
+      - traefik.http.middlewares.mcpgateway-headers.headers.customrequestheaders.X-Forwarded-Proto=https
+      - traefik.http.middlewares.mcpgateway-headers.headers.customrequestheaders.X-Forwarded-Scheme=https
+      - traefik.http.middlewares.mcpgateway-headers.headers.customrequestheaders.X-Forwarded-Port=443
+      - traefik.http.middlewares.mcpgateway-cors.headers.accesscontrolalloworiginlist=https://chat.${DOMAIN_NAME}
+      - traefik.http.middlewares.mcpgateway-cors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
+      - traefik.http.middlewares.mcpgateway-cors.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept
+      - traefik.http.middlewares.mcpgateway-cors.headers.accesscontrolmaxage=86400
+      - traefik.http.middlewares.mcpgateway-ws.headers.customrequestheaders.Connection=Upgrade
+      - traefik.http.middlewares.mcpgateway-ws.headers.customrequestheaders.Upgrade=websocket
+      - traefik.http.routers.mcpgateway-api.entrypoints=websecure
+      - traefik.http.routers.mcpgateway-api.rule=Host(`mcp.${DOMAIN_NAME}`) && PathPrefix(`/mcp`)
+      - traefik.http.routers.mcpgateway-api.priority=10
+      - traefik.http.routers.mcpgateway-api.service=mcpgateway
+      - traefik.http.routers.mcpgateway-api.middlewares=mcpgateway-ws,mcpgateway-headers,lan-only
+      - traefik.http.routers.mcpgateway-api.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.mcpgateway-api.tls.domains[0].main=mcp.${DOMAIN_NAME}
+      - traefik.http.routers.mcpgateway.entrypoints=websecure
+      - traefik.http.routers.mcpgateway.rule=Host(`mcp.${DOMAIN_NAME}`)
+      - traefik.http.routers.mcpgateway.priority=1
+      - traefik.http.routers.mcpgateway.service=mcpgateway
+      - traefik.http.routers.mcpgateway.middlewares=mcpgateway-headers,mcpgateway-cors,lan-only
+      - traefik.http.routers.mcpgateway.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.mcpgateway.tls.domains[0].main=mcp.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+      - "ha.service-name=mcp-gateway"
+
+  # PostgreSQL for MCP Gateway
+  mcp-postgres:
+    image: git.u-acres.com/nicholas/postgres:15
+    container_name: mcp-postgres
+    restart: unless-stopped
+    networks:
+      - mcpnet
+    environment:
+      - POSTGRES_DB=mcpgateway
+      - POSTGRES_USER=${MCP_DB_USERNAME:-mcpuser}
+      - POSTGRES_PASSWORD=${MCP_DB_PASSWORD}
+    volumes:
+      - mcpgateway_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d mcpgateway -U ${MCP_DB_USERNAME:-mcpuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+      - "ha.service-name=mcp-postgres"
+
+  # One-time compatibility guard for legacy MCP Gateway schemas.
+  mcp-db-compat:
+    image: git.u-acres.com/nicholas/postgres:15
+    container_name: mcp-db-compat
+    restart: "no"
+    networks:
+      - mcpnet
+    depends_on:
+      mcp-postgres:
+        condition: service_healthy
+    environment:
+      - PGPASSWORD=HPRoSZ2E9fcZ7EMHSAOzWDVLiy8ktF3cKauzQOcYHXw
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        psql -h mcp-postgres -U ${MCP_DB_USERNAME:-mcpuser} -d mcpgateway -v ON_ERROR_STOP=1 <<'SQL'
+        ALTER TABLE IF EXISTS tool_plugin_bindings
+          ADD COLUMN IF NOT EXISTS on_error VARCHAR(16);
+        SQL
+    labels:
+      - "ha.monitor=false"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+      - "ha.service-name=mcp-db-compat"
+
+  # Redis for MCP Gateway caching and federation
+  redis:
+    image: git.u-acres.com/nicholas/redis:alpine
+    container_name: mcp-redis
+    restart: unless-stopped
+    networks:
+      - mcpnet
+    volumes:
+      - /srv/mcp-gateway/redis:/data
+    labels:
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MCPGateway/mcpgateway.yml"
+      - "ha.service-name=redis"
+
+networks:
+  mcpnet:
+    name: mcpnet
+    external: true
+  aiproxy:
+    external: true
+
+volumes:
+  mcpgateway_postgres_data:

@@ -1,0 +1,26 @@
+services:
+  profilarr:
+    image: git.u-acres.com/nicholas/santiagosayshey/profilarr:latest
+    container_name: profilarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+      - PROFILARR_PAT=${PROFILARR_PAT}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.profilarr.entrypoints=websecure
+      - traefik.http.routers.profilarr.rule=Host(`profilarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.profilarr.service=profilarr
+      - traefik.http.services.profilarr.loadbalancer.server.port=6868
+      - traefik.http.routers.profilarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.profilarr.tls.domains[0].main=profilarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/profilarr/config:/config
+
+networks:
+  mediaproxy:
+    external: true

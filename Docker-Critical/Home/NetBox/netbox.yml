@@ -1,0 +1,212 @@
+services:
+  netbox:
+    image: git.u-acres.com/nicholas/netboxcommunity/netbox:latest
+    container_name: netbox
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    depends_on:
+      - netbox-postgres
+      - netbox-redis
+    # NetBox 6.x has no _FILE secret support; this wrapper promotes *_FILE
+    # secret mounts to the plain env vars NetBox's loader actually reads, then
+    # execs the upstream entrypoint. Script is bind-mounted (no secret values).
+    entrypoint: ["/opt/netbox/netbox/scripts/file-secrets-entrypoint.sh"]
+    command: ["/opt/netbox/launch-netbox.sh"]
+    environment:
+      # Core (non-secret)
+      ALLOWED_HOSTS: ${NETBOX_ALLOWED_HOSTS}
+      DB_NAME: ${NETBOX_DB_NAME}
+      DB_USER: ${NETBOX_DB_USER}
+      DB_HOST: ${NETBOX_DB_HOST}
+      DB_PASSWORD_FILE: /run/secrets/netbox_db_password
+      REDIS_HOST: ${NETBOX_REDIS_HOST}
+
+      # SSO via Authelia/Traefik forward-auth (Remote-User header)
+      REMOTE_AUTH_ENABLED: "true"
+      REMOTE_AUTH_HEADER: HTTP_REMOTE_USER
+      REMOTE_AUTH_AUTO_CREATE_USER: "true"
+      REMOTE_AUTH_GROUP_SYNC_ENABLED: "true"
+      REMOTE_AUTH_BACKEND: netbox.authentication.RemoteUserBackend
+
+      # Security (provided via Docker secrets at runtime; see *_FILE below)
+      SECRET_KEY_FILE: /run/secrets/netbox_secret_key
+      API_TOKEN_PEPPERS_FILE: /run/secrets/netbox_api_token_peppers
+
+      # Email (optional)
+      EMAIL_FROM: ${NETBOX_EMAIL_FROM}
+      EMAIL_SERVER: ${NETBOX_EMAIL_SERVER}
+      EMAIL_PORT: ${NETBOX_EMAIL_PORT}
+      EMAIL_USERNAME: ${NETBOX_SMTP_USERNAME}
+      EMAIL_PASSWORD_FILE: /run/secrets/netbox_smtp_password
+
+      # Metrics
+      METRICS_ENABLED: ${NETBOX_METRICS_ENABLED}
+
+      # Sync script configuration (plaintext env — consumed by the sync
+      # scripts in /srv/netbox/scripts, which run in a shell that does NOT
+      # execute the _FILE wrapper. The core NetBox secrets directly above use
+      # the _FILE mount pattern instead, so they never appear in `docker inspect`.)
+      #
+      # NOTE: source-credentials (OPNsense/Omada/TrueNAS/Docker) are now passed
+      # as *_FILE Docker-secret mounts (see `secrets:` below + the top-level
+      # block) and promoted to plain env by file-secrets-entrypoint.sh, so they
+      # never appear in `docker inspect` either. vaultwarden is the authoring
+      # store only — written to ./secrets/*.txt by populate-secrets.sh, never
+      # read at sync runtime.
+      TRUENAS_URL: ${TRUENAS_URL}
+      TRUENAS_API_KEY_FILE: /run/secrets/truenas_api_key
+      OPNSENSE_URL: ${OPNSENSE_URL}
+      OPNSENSE_API_KEY_FILE: /run/secrets/opnsense_api_key
+      OPNSENSE_API_SECRET_FILE: /run/secrets/opnsense_api_secret
+      OMADA_URL: ${OMADA_URL}
+      OMADA_USERNAME_FILE: /run/secrets/omada_username
+      OMADA_PASSWORD_FILE: /run/secrets/omada_password
+      OMADA_SITE_NAME: ${OMADA_SITE_NAME}
+      OMADA_OPENAPI_CLIENT_ID_FILE: /run/secrets/omada_openapi_client_id
+      OMADA_OPENAPI_CLIENT_SECRET_FILE: /run/secrets/omada_openapi_client_secret
+      DOCKHAND_URL: ${DOCKHAND_URL}
+      DOCKHAND_USERNAME_FILE: /run/secrets/dockhand_username
+      DOCKHAND_PASSWORD_FILE: /run/secrets/dockhand_password
+      DOCKER_HOST: ${DOCKER_HOST}
+      DOCKER_SITE: ${DOCKER_SITE}
+      NETBOX_TOKEN_FILE: /run/secrets/netbox_api_token
+      NETBOX_URL: ${NETBOX_URL}
+
+    secrets:
+      - netbox_secret_key
+      - netbox_api_token_peppers
+      - netbox_db_password
+      - netbox_smtp_password
+      - opnsense_api_key
+      - opnsense_api_secret
+      - omada_username
+      - omada_password
+      - omada_openapi_client_id
+      - omada_openapi_client_secret
+      - dockhand_username
+      - dockhand_password
+      - truenas_api_key
+      - netbox_api_token
+
+    volumes:
+      - /srv/netbox/media:/opt/netbox/netbox/media
+      - /srv/netbox/reports:/opt/netbox/netbox/reports
+      - ./scripts:/opt/netbox/netbox/scripts
+      - ./theme/extra.py:/etc/netbox/config/extra.py:ro
+      - ./theme/sage.css:/opt/netbox/netbox/static/netbox/css/sage.css:ro
+      - ./scripts/file-secrets-entrypoint.sh:/opt/netbox/netbox/scripts/file-secrets-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.netbox.entrypoints=websecure
+      - traefik.http.routers.netbox.rule=Host(`netbox.${DOMAIN_NAME}`)
+      - traefik.http.routers.netbox.service=netbox
+      - traefik.http.services.netbox.loadbalancer.server.port=8080
+      - traefik.docker.network=toolsproxy
+      # TODO: Enable Authentik middleware once forward-auth is configured
+      # - traefik.http.routers.netbox.middlewares=authentik@docker
+      - traefik.http.routers.netbox.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.netbox.tls.domains[0].main=netbox.${DOMAIN_NAME}
+
+  netbox-worker:
+    image: git.u-acres.com/nicholas/netboxcommunity/netbox:latest
+    container_name: netbox-worker
+    restart: unless-stopped
+    # See netbox service: promotes *_FILE secret mounts to plain env vars.
+    entrypoint: ["/opt/netbox/netbox/scripts/file-secrets-entrypoint.sh"]
+    networks:
+      - toolsproxy
+    depends_on:
+      - netbox
+    environment:
+      ALLOWED_HOSTS: ${NETBOX_ALLOWED_HOSTS}
+      DB_NAME: ${NETBOX_DB_NAME}
+      DB_USER: ${NETBOX_DB_USER}
+      DB_PASSWORD_FILE: /run/secrets/netbox_db_password
+      DB_HOST: ${NETBOX_DB_HOST}
+      REDIS_HOST: ${NETBOX_REDIS_HOST}
+      SECRET_KEY_FILE: /run/secrets/netbox_secret_key
+      API_TOKEN_PEPPERS_FILE: /run/secrets/netbox_api_token_peppers
+    secrets:
+      - netbox_secret_key
+      - netbox_api_token_peppers
+      - netbox_db_password
+    volumes:
+      - ./scripts/file-secrets-entrypoint.sh:/opt/netbox/netbox/scripts/file-secrets-entrypoint.sh:ro
+    command: /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+  netbox-postgres:
+    image: git.u-acres.com/nicholas/postgres:15-alpine
+    container_name: netbox-postgres
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    environment:
+      POSTGRES_DB: ${NETBOX_DB_NAME}
+      POSTGRES_USER: ${NETBOX_DB_USER}
+      POSTGRES_PASSWORD_FILE: /run/secrets/netbox_db_password
+    secrets:
+      - netbox_db_password
+    volumes:
+      - /srv/netbox/postgres:/var/lib/postgresql/data
+  netbox-redis:
+    image: git.u-acres.com/nicholas/redis:7-alpine
+    container_name: netbox-redis
+    restart: unless-stopped
+    networks:
+      - toolsproxy
+    command: ["redis-server", "--appendonly", "yes"]
+    # Passwordless: redis lives only on the internal toolsproxy network (not
+    # published). NetBox 6.x has no REDIS_PASSWORD_FILE support, so a file-
+    # mounted redis password can't be wired in without leaking it as a plaintext
+    # env var -- avoided per secret-handling policy.
+    volumes:
+      - /srv/netbox/redis:/data
+secrets:
+  netbox_secret_key:
+    file: ./secrets/netbox_secret_key.txt
+  netbox_api_token_peppers:
+    file: ./secrets/netbox_api_token_peppers.txt
+  netbox_db_password:
+    file: ./secrets/netbox_db_password.txt
+  netbox_smtp_password:
+    file: ./secrets/netbox_smtp_password.txt
+  # Source-system API creds for the sync scripts. Authoring store: vaultwarden
+  # (HAOS .50). populate-secrets.sh writes these from vaultwarden into
+  # ./secrets/*.txt (gitignored, root-owned). They are mounted read-only into
+  # the netbox service and promoted to env by file-secrets-entrypoint.sh.
+  opnsense_api_key:
+    file: ./secrets/opnsense_api_key.txt
+  opnsense_api_secret:
+    file: ./secrets/opnsense_api_secret.txt
+  omada_username:
+    file: ./secrets/omada_username.txt
+  omada_password:
+    file: ./secrets/omada_password.txt
+  # Omada Open API OAuth2 client creds (custom fields on the "netbox omada login"
+  # vault item; created in Omada UI: Settings -> Platform Integration -> OpenAPI).
+  # Only used by sync_omada.py's OpenAPI flow; empty until populate-secrets-v3
+  # finds the custom fields, and sync_omada.py skips gracefully when unset.
+  omada_openapi_client_id:
+    file: ./secrets/omada_openapi_client_id.txt
+  omada_openapi_client_secret:
+    file: ./secrets/omada_openapi_client_secret.txt
+  # Dockhand (Finsys) fleet container inventory — vault item "netbox dockhand login"
+  # (fields username/password); created in Dockhand UI: Settings -> Users.
+  dockhand_username:
+    file: ./secrets/dockhand_username.txt
+  dockhand_password:
+    file: ./secrets/dockhand_password.txt
+  truenas_api_key:
+    file: ./secrets/truenas_api_key.txt
+  netbox_api_token:
+    file: ./secrets/netbox_api_token.txt
+
+networks:
+  toolsproxy:
+    external: true

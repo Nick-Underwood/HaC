@@ -1,0 +1,8 @@
+[Unit]
+Description=Wazuh archive rsync to NFS (out-of-band retention copy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /srv/wazuh/scripts/archive-rsync.sh

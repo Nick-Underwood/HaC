@@ -1,0 +1,14 @@
+{
+  "_comment": "FILL THIS IN. Gitignored (.env/secrets excluded). Never commit. Hermes reads it locally, nothing transits chat.",
+  "VAULT_URL": "https://vault.u-acres.com",
+  "VAULT_TOKEN": "PASTE_VAULTWARDEN_ACCESS_TOKEN_HERE",
+  "N8N_BASIC_AUTH_USER": "PASTE_N8N_USER",
+  "N8N_BASIC_AUTH_PASSWORD": "PASTE_N8N_PASSWORD",
+  "VAULT_ITEMS": {
+    "vikunja_api_token": "ITEM_NAME_OR_ID_HERE",
+    "forgejo_token": "ITEM_NAME_OR_ID_HERE",
+    "outline_api_token": "ITEM_NAME_OR_ID_HERE",
+    "ms_graph": "ITEM_NAME_OR_ID_HERE"
+  },
+  "_note": "If you don't know exact Vault item names, set VAULT_ITEMS values to 'find' and Hermes will list your vault to locate them."
+}

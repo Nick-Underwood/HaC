@@ -1,0 +1,139 @@
+name: Deploy Local Mail Stack (docker-mailserver + Roundcube)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Networking/Mail/mailserver.yml"
+      - "Docker-Critical/Networking/Mail/.gitignore"
+      - ".forgejo/workflows/deploy-mailserver.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: docker-critical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login git.u-acres.com -u nicholas --password-stdin
+      - name: Verify compose file exists
+        run: ls -l "./Docker-Critical/Networking/Mail/mailserver.yml"
+
+      - name: Write secrets from Forgejo repo secrets
+        env:
+          S_ADMIN: ${{ secrets.MAILSERVER_ADMIN_PASSWORD }}
+          S_RC_DB: ${{ secrets.ROUNDCUBE_DB_PASSWORD }}
+          S_RC_ROOT: ${{ secrets.ROUNDCUBE_DB_ROOT_PASSWORD }}
+          S_RC_DES: ${{ secrets.ROUNDCUBE_DES_KEY }}
+        run: |
+          # Fail fast if any required secret is missing.
+          missing=""
+          [ -z "$S_ADMIN" ]  && missing="$missing MAILSERVER_ADMIN_PASSWORD"
+          [ -z "$S_RC_DB" ]  && missing="$missing ROUNDCUBE_DB_PASSWORD"
+          [ -z "$S_RC_ROOT" ] && missing="$missing ROUNDCUBE_DB_ROOT_PASSWORD"
+          [ -z "$S_RC_DES" ]  && missing="$missing ROUNDCUBE_DES_KEY"
+          if [ -n "$missing" ]; then
+            echo "Missing required Forgejo secrets:$missing" >&2
+            exit 1
+          fi
+          # Write secrets DIRECTLY to the persistent path the compose mounts.
+          # The runner workdir is ephemeral and purged between steps/jobs —
+          # writing to ./secrets there never survives to the Deploy step.
+          sudo mkdir -p /srv/mailserver/secrets
+          printf '%s' "$S_ADMIN"   | sudo tee /srv/mailserver/secrets/mailserver_admin_password >/dev/null
+          printf '%s' "$S_RC_DB"   | sudo tee /srv/mailserver/secrets/roundcube_db_password >/dev/null
+          printf '%s' "$S_RC_ROOT" | sudo tee /srv/mailserver/secrets/roundcube_db_root_password >/dev/null
+          printf '%s' "$S_RC_DES"  | sudo tee /srv/mailserver/secrets/roundcube_des_key >/dev/null
+          sudo chmod 600 /srv/mailserver/secrets
+          sudo sh -c 'chmod 600 /srv/mailserver/secrets/*'
+          echo "wrote $(sudo ls -1 /srv/mailserver/secrets | wc -l) secret files to /srv/mailserver/secrets"
+
+      - name: Prepare host directories
+        run: |
+          sudo mkdir -p /docker-data/dms/mail /docker-data/dms/state /docker-data/dms/config /docker-data/dms/logs
+          sudo mkdir -p /docker-data/roundcube/db
+          # docker-mailserver runs as UID 5000 (mail) inside the container.
+          sudo chown -R 5000:5000 /docker-data/dms
+          sudo chown -R 999:999 /docker-data/roundcube/db   # mariadb UID
+
+      - name: Deploy mail stack
+        working-directory: "./Docker-Critical/Networking/Mail"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          defined_image=$(grep -m1 'image: docker.io/mailserver' mailserver.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' mailserver 2>/dev/null || echo "none")
+          checksum=$(sha256sum mailserver.yml | awk '{print $1}')
+          old=$(sudo cat /srv/mailserver/.mailserver_checksum 2>/dev/null || echo "")
+
+          echo "Defined: $defined_image"
+          echo "Running: $running_image"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Deploying local mail stack..."
+              sudo mkdir -p /srv/mailserver
+              sudo cp mailserver.yml /srv/mailserver/
+              sudo chmod 644 /srv/mailserver/mailserver.yml
+              # Secrets were written to /srv/mailserver/secrets by the
+              # 'Write secrets' step (persistent path; compose mounts
+              # ./secrets relative to /srv/mailserver).
+              # Write a concrete .env so ${DOMAIN_NAME} interpolation always
+              # resolves to the specific hostname (mail.u-acres.com), even if
+              # vars delivery is flaky. Same pattern as deploy-karakeep.
+              printf 'DOMAIN_NAME=%s\n' "$DOMAIN_NAME" | sudo tee /srv/mailserver/.env > /dev/null
+              sudo chmod 644 /srv/mailserver/.env
+              cd /srv/mailserver
+              docker compose -p mail -f mailserver.yml down --remove-orphans || true
+              docker compose -p mail -f mailserver.yml up -d --force-recreate
+            sudo sh -c "echo '$checksum' > /srv/mailserver/.mailserver_checksum"
+          else
+            echo "No redeploy needed"
+          fi
+
+      - name: Wait for mailserver to come up
+        run: sleep 30
+
+      - name: Provision local admin mailbox (idempotent)
+        env:
+          S_ADMIN: ${{ secrets.MAILSERVER_ADMIN_PASSWORD }}
+        run: |
+          # Create the admin account used for password-reset / invite delivery.
+          # `setup email add` errors if the account already exists, so fall back
+          # to `update` to keep the password in sync on redeploys.
+          if docker exec mailserver setup email add admin@uacres.local "$S_ADMIN" 2>/tmp/dms_add.err; then
+            echo "Created admin@uacres.local"
+          else
+            if grep -qi 'already exists' /tmp/dms_add.err 2>/dev/null; then
+              docker exec mailserver setup email update admin@uacres.local "$S_ADMIN"
+              echo "Updated password for existing admin@uacres.local"
+            else
+              echo "Account provisioning reported (non-fatal):"
+              cat /tmp/dms_add.err
+            fi
+          fi
+          echo "--- accounts ---"
+          docker exec mailserver setup email list
+
+      - name: Verify endpoints
+        run: |
+          RC=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/ || true)
+          echo "roundcube raw HTTP (localhost:8082): $RC"
+          SMTP=$(docker exec mailserver sh -c "nc -z -w3 localhost 25 && echo up || echo down" 2>/dev/null || echo "n/a")
+          echo "mailserver SMTP 25: $SMTP"
+          IMAP=$(docker exec mailserver sh -c "nc -z -w3 localhost 993 && echo up || echo down" 2>/dev/null || echo "n/a")
+          echo "mailserver IMAPS 993: $IMAP"

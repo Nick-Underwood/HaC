@@ -1,0 +1,43 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  ntfy:
+    image: git.u-acres.com/nicholas/binwiederhier/ntfy:latest
+    container_name: ntfy
+    restart: unless-stopped
+    command: serve
+    environment:
+      - TZ=${TZ}
+      - NTFY_BASE_URL=https://ntfy.${DOMAIN_NAME}
+      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db
+      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+    volumes:
+      - /srv/ntfy:/var/lib/ntfy
+    networks:
+      toolsproxy:
+        aliases:
+          # Explicit aliases so other stacks can reach ntfy by a stable
+          # docker-network DNS name. "ntfy-alert" is used by the monitoring
+          # stack's Alertmanager — a distinct name avoids colliding with the
+          # host's "ntfy.u-acres.com" DNS entry (which otherwise makes some
+          # containers fall back to the host resolver and hit Traefik).
+          - ntfy
+          - ntfy-alert
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=toolsproxy"
+      - "traefik.http.routers.ntfy.entrypoints=websecure"
+      - "traefik.http.routers.ntfy.rule=Host(`ntfy.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.ntfy.service=ntfy"
+      - "traefik.http.services.ntfy.loadbalancer.server.port=80"
+      - "traefik.http.routers.ntfy.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.ntfy.tls.domains[0].main=ntfy.${DOMAIN_NAME}"

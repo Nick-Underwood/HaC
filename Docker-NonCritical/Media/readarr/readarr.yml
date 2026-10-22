@@ -1,0 +1,36 @@
+services:
+  readarr:
+    image: git.u-acres.com/nicholas/linuxserver/readarr:0.4.19-nightly
+    container_name: readarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.readarr.entrypoints=websecure
+      - traefik.http.routers.readarr.rule=Host(`readarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.readarr.service=readarr
+      - traefik.http.services.readarr.loadbalancer.server.port=8787
+      - traefik.http.routers.readarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.readarr.tls.domains[0].main=readarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/readarr/config:/config
+      - /mnt/data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 200
+networks:
+  mediaproxy:
+    external: true

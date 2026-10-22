@@ -1,0 +1,8 @@
+# Secrets written at deploy time from Forgejo repo secrets (never committed)
+/secrets/
+
+# Re-include Grafana dashboard JSON — the repo root .gitignore has a broad
+# *.json rule meant to catch Forgejo API debug dumps, which would otherwise
+# ignore these provisioned dashboards.
+!grafana/dashboards/*.json
+!grafana/dashboards/**/*.json

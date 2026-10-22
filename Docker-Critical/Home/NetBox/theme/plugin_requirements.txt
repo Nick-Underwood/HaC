@@ -1,0 +1,5 @@
+# NetBox Plugins - Add plugin PyPI package names here
+# Examples:
+netbox-secrets
+# netbox-inventory
+

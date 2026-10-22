@@ -1,0 +1,256 @@
+networks:
+  secproxy:
+    external: true
+
+volumes:
+  # Docker named volumes auto-populate from image defaults on first creation.
+  # This matches the official wazuh-docker setup and avoids the bind mount
+  # issue where empty host dirs hide the image's built-in config files.
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-dashboard-custom:
+
+services:
+  wazuh.indexer:
+    image: git.u-acres.com/nicholas/wazuh/wazuh-indexer:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.indexer
+    container_name: wazuh-indexer
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+    environment:
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    volumes:
+      - /srv/wazuh/indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      - /srv/wazuh/indexer-data:/var/lib/wazuh-indexer
+
+    networks:
+      - secproxy
+
+    # Readiness: indexer HTTP listener up. security plugin disabled, so plain GET works.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  wazuh.manager:
+    image: git.u-acres.com/nicholas/wazuh/wazuh-manager:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.manager
+    container_name: wazuh-manager
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          # 4G: with analysisd surviving (archives perms fixed), a 2G cap OOM-killed
+          # wazuh-apid at startup (cgroup kill -> [cont-init.d] 2-manager exited 1 ->
+          # all daemons down). Wazuh manager with 8k+ rules needs the headroom.
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+    ports:
+      - "1514:1514"     # Wazuh agent communication (secure remote)
+      - "514:514/udp"   # Syslog
+      # 1515 (enrollment) IS published (2026-08-12): the OPNsense fw agent
+      # re-enrolls with the shared password (authd.pass + use_password=yes).
+      # authd requires the password, so exposure is brute-forcing a 24-char
+      # random secret on the LAN. Remove this line after the fw has its key.
+      - "1515:1515"     # Wazuh enrollment (authd, password-protected)
+      # 55000 (Wazuh API) is intentionally NOT published to the host: it is only
+      # consumed internally — the dashboard reaches it via Docker DNS
+      # (wazuh.manager:55000) and wazuh-watchdog.py talks to the indexer (9200),
+      # never host:55000. Publishing it would be a needless attack surface.
+      # If an external tool must call the manager API, expose it via Traefik
+      # (with auth) instead of a raw host port.
+
+    environment:
+      - INDEXER_URL=http://wazuh.indexer:9200
+      - INDEXER_USERNAME=${WAZUH_INDEXER_USERNAME:-admin}
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
+      # Disable SSL for internal communication (Traefik handles external TLS)
+      - FILEBEAT_SSL_VERIFICATION_MODE=none
+      - API_USERNAME=${WAZUH_API_USERNAME:-wazuh-wui}
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
+      # Used by ossec.conf $(WAZUH_ENROLL_PASSWORD) — enrollment auth
+      - WAZUH_ENROLL_PASSWORD=${WAZUH_ENROLL_PASSWORD:-changeme}
+      # Used by ossec.conf $(WAZUH_CLUSTER_KEY) — only if cluster enabled
+      - WAZUH_CLUSTER_KEY=${WAZUH_CLUSTER_KEY:-changeme}
+      # Consistent timezone across the stack (alerts, logs, dashboards)
+      - TZ=${TZ:-America/Chicago}
+
+    # Force IPv4 egress: cti.wazuh.com resolves to Cloudflare IPv6 addrs and
+    # the manager's content-updater gets HTTP 406 from Cloudflare's IPv6 edge
+    # path. Disabling IPv6 in the container makes getaddrinfo return only A
+    # records, so the CTI feed pull goes over IPv4 (which Cloudflare accepts).
+    # The manager only needs IPv4 anyway (indexer, agents, CTI are all v4).
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+
+    volumes:
+      # Docker named volumes — auto-populated from image on first creation
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      # Custom manager config (no SSL, http indexer) — mounted at the
+      # path the Docker image's init script expects for config injection
+      - /srv/wazuh/manager/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      # Enrollment password file — authd reads /var/ossec/etc/authd.pass. Wazuh 4.14
+      # ossec.conf does NOT accept a <password> element (error 1230 kills the whole
+      # manager), so the password lives here instead. The deploy workflow writes it
+      # from the WAZUH_ENROLL_PASSWORD secret before `up -d`.
+      - /srv/wazuh/manager/authd.pass:/var/ossec/etc/authd.pass
+      # Custom local decoders/rules (OPNsense syslog, host-health rules)
+      - /srv/wazuh/manager/custom:/var/ossec/etc/custom
+      # Archived logs — LOCAL disk (CIFS/NFS I/O errors previously killed
+      # monitord; an out-of-band rsync script copies them to NFS). See
+      # scripts/archive-rsync.sh + systemd wazuh-archive-rsync.timer.
+      - /srv/wazuh/archives:/var/ossec/logs/archives
+
+    networks:
+      - secproxy
+
+    depends_on:
+      - wazuh.indexer
+
+    # Readiness: core analysis engine running (the service that actually
+    # processes alerts). wazuh-control is the manager's own status binary.
+    healthcheck:
+      test: ["CMD-SHELL", "/var/ossec/bin/wazuh-control status | grep -q 'wazuh-analysisd is running' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  wazuh.dashboard:
+    image: git.u-acres.com/nicholas/wazuh/wazuh-dashboard:${WAZUH_VERSION:-4.14.3}
+    hostname: wazuh.dashboard
+    container_name: wazuh-dashboard
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+    labels:
+      # Traefik routing (SSL termination here)
+      - traefik.enable=true
+      - traefik.http.routers.wazuh.entrypoints=websecure
+      - traefik.http.routers.wazuh.rule=Host(`wazuh.${DOMAIN_NAME}`)
+      - traefik.http.routers.wazuh.service=wazuh
+      - traefik.http.services.wazuh.loadbalancer.server.port=5601
+      - traefik.http.routers.wazuh.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.wazuh.tls.domains[0].main=wazuh.${DOMAIN_NAME}
+      # TODO: Add authelia@docker middleware once Authelia is deployed
+      # - traefik.http.routers.wazuh.middlewares=authelia@docker
+
+    # Remove the OpenSearch Security Dashboards plugin on startup.
+    # Security plugin is disabled on the indexer (no SSL/auth needed internally).
+    # Traefik + Authelia handle external access control.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        if [ -d /usr/share/wazuh-dashboard/plugins/securityDashboards ]; then
+          /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin remove securityDashboards --allow-root 2>/dev/null || true
+        fi
+        /entrypoint.sh
+
+    environment:
+      - OPENSEARCH_HOSTS=http://wazuh.indexer:9200
+      # Disable SSL for internal communication
+      - SERVER_SSL_ENABLED=false
+      # API credentials are provided via the bind-mounted wazuh.yml file.
+      # Do NOT set WAZUH_API_URL, API_USERNAME, or API_PASSWORD here —
+      # the dashboard appends a duplicate hosts: block from env vars,
+      # crashing with "duplicated mapping key".
+
+    volumes:
+      - /srv/wazuh/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      # wazuh.yml generated by deploy workflow with actual API credentials.
+      # MUST stay read-only: the wazuhCore plugin appends its DEFAULT host
+      # template (url: https://wazuh, user/pass wazuh-wui, run_as: true) to
+      # this file on startup whenever it is writable -> duplicate "hosts:" key
+      # -> "duplicated mapping key" FATAL -> dashboard crash-loop (seen
+      # 2026-08-12). Trade-off: the login "remember server address" toggle
+      # 500s (EROFS) — cosmetic, the default host is already configured here.
+      - /srv/wazuh/dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+
+    networks:
+      - secproxy
+
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+      wazuh.manager:
+        condition: service_healthy
+
+    # Readiness: dashboard HTTP listener up on 5601.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # One-shot init container: applies 30-day index retention policy to the indexer
+  wazuh.ism-init:
+    image: git.u-acres.com/nicholas/curlimages/curl:latest
+    container_name: wazuh-ism-init
+    restart: "no"
+    networks:
+      - secproxy
+    volumes:
+      - /srv/wazuh/indexer/ism-policy.json:/ism-policy.json:ro
+      - /srv/wazuh/indexer/apply-ism-policy.sh:/apply-ism-policy.sh:ro
+    entrypoint: ["sh", "/apply-ism-policy.sh"]
+    depends_on:
+      - wazuh.indexer

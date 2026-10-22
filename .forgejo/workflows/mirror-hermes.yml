@@ -1,0 +1,48 @@
+name: Mirror Hermes image to local registry
+
+# One-time (or on-demand) mirror of the upstream Hermes image into the local
+# git.u-acres.com Forgejo registry so the deploy workflow + container restarts
+# never depend on an external registry. SHTF-local by design.
+#
+# Upstream is the PUBLIC Docker Hub image (nousresearch/hermes-agent) — no auth
+# needed to PULL. The local Forgejo registry (git.u-acres.com) needs FORGEJO_TOKEN
+# to PUSH. The PAT (TOKEN_GITHUB) is intentionally NOT used here; Docker Hub public
+# pulls are anonymous.
+#
+# Trigger: Actions -> "Mirror Hermes image to local registry" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Source image (Docker Hub, public)'
+        required: false
+        default: 'nousresearch/hermes-agent:main'
+      target:
+        description: 'Target image in local Forgejo registry'
+        required: false
+        default: 'git.u-acres.com/nicholas/hermes-agent:main'
+
+jobs:
+  mirror:
+    runs-on: docker-noncritical
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Pull source image (public Docker Hub)
+        run: docker pull "${{ inputs.source }}"
+
+      - name: Tag for local registry
+        run: docker tag "${{ inputs.source }}" "${{ inputs.target }}"
+
+      - name: Authenticate to local registry (push)
+        run: |
+          echo "${{ secrets.FORGEJO_TOKEN }}" | docker login git.u-acres.com -u nicholas --password-stdin
+
+      - name: Push to local registry
+        run: docker push "${{ inputs.target }}"
+
+      - name: Logout
+        run: docker logout git.u-acres.com

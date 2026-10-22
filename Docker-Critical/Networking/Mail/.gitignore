@@ -1,0 +1,7 @@
+# Local secrets written by the deploy workflow from Forgejo repo secrets.
+# Never committed.
+secrets/
+
+# docker-mailserver self-signed cert + runtime config (host bind mount at
+# /docker-data/dms/config). Generate on the host, not in git.
+/docker-data/

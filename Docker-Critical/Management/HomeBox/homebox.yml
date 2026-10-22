@@ -1,0 +1,27 @@
+services:
+  homebox:
+    image: git.u-acres.com/nicholas/sysadminsmedia/homebox:latest
+    container_name: homebox
+    environment:
+      - TZ=America/Chicago
+      - HBOX_LOG_LEVEL=info
+      - HBOX_LOG_FORMAT=text
+      - HBOX_WEB_MAX_UPLOAD_SIZE=10
+      - HBOX_AUTH_API_KEY_PEPPER=${HBOX_AUTH_API_KEY_PEPPER}
+    networks:
+      - homeproxy
+    labels:
+      - traefik.http.routers.homebox.entrypoints=websecure
+      - traefik.http.routers.homebox.rule=Host(`homebox.${DOMAIN_NAME}`)
+      - traefik.http.routers.homebox.service=homebox
+      - traefik.http.services.homebox.loadbalancer.server.port=7745
+      - traefik.http.routers.homebox.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.homebox.tls.domains[0].main=homebox.${DOMAIN_NAME}
+      - traefik.enable=true
+    restart: unless-stopped
+    volumes:
+      - /srv/homebox/data:/data
+networks:
+  homeproxy:
+    external: True
+    name: homeproxy

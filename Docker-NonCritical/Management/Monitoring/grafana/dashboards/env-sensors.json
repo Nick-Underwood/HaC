@@ -1,0 +1,122 @@
+{
+  "id": null,
+  "title": "Environment & Sensors",
+  "uid": "env-sensors",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "weather",
+        "label": "WS90 / Weather station",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state{entity=~\".*(ws90|wind|rain|solar|uv|precip|lightning|gust|outdoor).*\"}, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "air",
+        "label": "Air quality",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state{entity=~\".*(air|aqi|co2|pm|voc|quality|pollut|o3|no2).*\"}, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "elec",
+        "label": "Electrical",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state{entity=~\".*(power|energy|electric|watt|kwh|voltage|current|amp|grid).*\"}, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "gas",
+        "label": "Gas",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state{entity=~\".*(gas|methane|propane|co_|natural).*\"}, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "th",
+        "label": "Temp & Humidity",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state{entity=~\".*(temp|humid|dewpoint|feels).*\"}, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "WS90 / Weather Station",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$weather\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Air Quality",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$air\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Electrical",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$elec\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gas",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$gas\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Temperature & Humidity",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$th\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "HA API Up (1 = reachable)",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "targets": [ { "expr": "ha_up" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Tracked Numeric Entities",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "targets": [ { "expr": "count(ha_entity_state)" } ]
+    }
+  ]
+}

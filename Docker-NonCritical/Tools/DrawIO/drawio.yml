@@ -1,0 +1,42 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  drawio:
+    # Official jgraph/drawio image (Tomcat+JDK11, serves the drawio webapp).
+    # v31.1.8 matches the current upstream release. Serves on 8080.
+    image: git.u-acres.com/nicholas/jgraph/drawio:31.1.8
+    container_name: drawio
+    restart: unless-stopped
+
+    # Resource limits (Tomcat + JVM)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+    labels:
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.drawio.entrypoints=websecure
+      - traefik.http.routers.drawio.rule=Host(`drawio.${DOMAIN_NAME}`)
+      - traefik.http.routers.drawio.service=drawio
+      - traefik.http.services.drawio.loadbalancer.server.port=8080
+      - traefik.http.routers.drawio.tls.certresolver=${CERTRESOLVER}
+      # Auth — Authentik forward auth (internal tool, keep behind SSO)
+      - traefik.http.routers.drawio.middlewares=authentik@docker
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    networks:
+      - toolsproxy

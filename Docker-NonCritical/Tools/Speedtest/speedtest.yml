@@ -1,0 +1,21 @@
+networks:
+  toolsproxy:
+    external: true
+
+services:
+  speedtest:
+    image: git.u-acres.com/nicholas/openspeedtest/latest:latest
+    container_name: speedtest
+    restart: unless-stopped
+
+    labels:
+      # Traefik routing
+      - traefik.enable=true
+      - traefik.http.routers.speedtest.entrypoints=websecure
+      - traefik.http.routers.speedtest.rule=Host(`speedtest.${DOMAIN_NAME}`)
+      - traefik.http.routers.speedtest.service=speedtest
+      - traefik.http.services.speedtest.loadbalancer.server.port=3000
+      - traefik.http.routers.speedtest.tls.certresolver=${CERTRESOLVER}
+
+    networks:
+      - toolsproxy

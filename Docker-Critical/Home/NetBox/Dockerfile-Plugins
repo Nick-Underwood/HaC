@@ -1,0 +1,16 @@
+# Pinned by digest for supply-chain reproducibility.
+# Matches the image already running/validated on docker-critical (.51):
+# netboxcommunity/netbox@sha256:974fb6ee8613fd75e236422f62e0ede82cd98cf5ac9f214a53dc889150cb39ec
+# (the cached :latest at deploy time). Upgrades are an explicit, reviewed digest bump.
+FROM netboxcommunity/netbox@sha256:974fb6ee8613fd75e236422f62e0ede82cd98cf5ac9f214a53dc889150cb39ec
+
+# NetBox 6.x ships with uv (no pip in the venv), so use uv to install plugins.
+COPY ./theme/plugin_requirements.txt /opt/netbox/
+RUN uv pip install --python /opt/netbox/venv/bin/python -r /opt/netbox/plugin_requirements.txt
+
+# Copy plugin config
+COPY ./theme/plugins.py /etc/netbox/config/plugins.py
+
+# If plugins have static files, uncomment and run collectstatic
+# RUN DEBUG="true" SECRET_KEY="dummydummydummydummydummydummydummydummydummydummy" \
+#    /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py collectstatic --no-input
