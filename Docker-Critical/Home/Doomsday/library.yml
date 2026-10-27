@@ -1,0 +1,31 @@
+services:
+  kiwix-serve:
+    image: <REDACTED_HOST>/nicholas/kiwix/kiwix-serve:latest
+    container_name: kiwix-serve
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    volumes:
+      - /mnt/hdd/kiwix/zim:/data:ro
+    command:
+      [
+        "kiwix-serve",
+        "--http=0.0.0.0:80",
+        "--library=/data/library.xml",
+        "/data/*.zim",
+      ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kiwix.entrypoints=websecure"
+      - "traefik.http.routers.kiwix.rule=Host(`library.${DOMAIN_NAME}`)"
+      - "traefik.http.services.kiwix.loadbalancer.server.port=80"
+      - "traefik.http.routers.kiwix.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.routers.kiwix.tls.domains[0].main=library.${DOMAIN_NAME}"
+networks:
+  homeproxy:
+    external: true

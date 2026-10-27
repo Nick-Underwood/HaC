@@ -1,0 +1,96 @@
+name: Deploy FreshRSS (NonCritical)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/FreshRSS/**"
+      - ".forgejo/workflows/deploy-freshrss.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/FreshRSS/freshrss.yml"
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+
+      - name: Deploy FreshRSS
+        working-directory: "./Docker-NonCritical/Tools/FreshRSS"
+        env:
+          TZ: ${{ vars.TZ }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          FRESHRSS_ADMIN_PASSWORD: ${{ secrets.FRESHRSS_ADMIN_PASSWORD }}
+          FRESHRSS_API_PASSWORD: ${{ secrets.FRESHRSS_API_PASSWORD }}
+        run: |
+          # Validate required non-secret vars
+          for var in TZ DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          # Secrets: use Forgejo secret or generate a strong random one.
+          # Generated values are written to files (mode 0600) in the
+          # deployer home dir — never logged.  No .env file is created.
+          mkdir -p ~/.hac-noncritical
+
+          ADMIN_PW="${FRESHRSS_ADMIN_PASSWORD:-}"
+          if [ -z "$ADMIN_PW" ]; then
+            ADMIN_PW=$(openssl rand -base64 32)
+          fi
+          printf %s "$ADMIN_PW" > ~/.hac-noncritical/.freshrss_admin_password
+          chmod 600 ~/.hac-noncritical/.freshrss_admin_password
+
+          API_PW="${FRESHRSS_API_PASSWORD:-}"
+          if [ -z "$API_PW" ]; then
+            API_PW=$(openssl rand -base64 32)
+          fi
+          printf %s "$API_PW" > ~/.hac-noncritical/.freshrss_api_password
+          chmod 600 ~/.hac-noncritical/.freshrss_api_password
+
+          # Export for docker compose variable substitution
+          export FRESHRSS_ADMIN_PASSWORD="$ADMIN_PW"
+          export FRESHRSS_API_PASSWORD="$API_PW"
+
+          defined_image=$(grep -m1 image: freshrss.yml | awk '{print}'
+          running_image=$(docker inspect -f '{{.Config.Image}}' freshrss 2>/dev/null || echo "none")
+          checksum=$(sha256sum freshrss.yml | awk '{print}'
+          old=$(cat ~/.hac-noncritical/.freshrss_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Deploying FreshRSS..."
+            docker compose -p freshrss down --remove-orphans || true
+            docker compose -p freshrss -f freshrss.yml up -d --force-recreate
+            echo "$checksum" > ~/.hac-noncritical/.freshrss_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi
+
+      - name: Wait for services to stabilize
+        run: sleep 15
+
+      - name: Verify endpoint
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+        run: |
+          CODE=$(curl -sk -o /dev/null -w "%{http_code}" "http://localhost:80/health" 2>/dev/null || true)
+          echo "freshrss container health: HTTP $CODE (expected 200)"
+          docker ps --filter name=freshrss --format "{{.Names}} {{.Status}}"

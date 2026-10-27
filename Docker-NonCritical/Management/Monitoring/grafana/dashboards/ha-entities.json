@@ -1,0 +1,52 @@
+{
+  "title": "Home Assistant - Entities",
+  "uid": "ha-entities",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "entity",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(ha_entity_state, entity)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Entity State Over Time",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$entity\"}", "legendFormat": "{{friendly_name}} ({{unit}})" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "HA API Up (1=reachable)",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 9 },
+      "targets": [ { "expr": "ha_up" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Tracked Entities",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 9 },
+      "targets": [ { "expr": "count(ha_entity_state)" } ]
+    },
+    {
+      "type": "table",
+      "title": "Current Values",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 9 },
+      "targets": [
+        { "expr": "ha_entity_state{entity=~\"$entity\"}", "legendFormat": "{{friendly_name}}" }
+      ]
+    }
+  ]
+}

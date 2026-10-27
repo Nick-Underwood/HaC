@@ -1,0 +1,59 @@
+# ── FreshRSS — centralized shared feed navigator ────────────────────────────
+# Purpose : Shared RSS/Atom reader for Finnews + Personal News ingestion
+# Host    : <REDACTED_HOST> <REDACTED_HOST>  →  project: freshrss
+# Route   : https://<REDACTED_HOST>  (Traefik websecure + cloudflare DNS)
+# Access  : LAN-only (10/8, 172.16/12, 192.168/16, Tailscale 100.64/10)
+# Secrets : FRESHRSS_ADMIN_PASSWORD + FRESHRSS_API_PASSWORD via Forgejo secrets
+#           (resolved from Vaultwarden through the Dockhand bw-shim path at
+#            deploy time).  No .env file — zero secrets on disk in the repo.)
+networks:
+  toolsproxy:
+    external: true
+
+volumes:
+  freshrss_data:
+
+services:
+  freshrss:
+    # Image is mirrored into the local Forgejo registry nightly (see
+    # mirror-mappings.txt).  pull_policy=if_not_present so restarts never
+    # depend on external registry reachability (SHTF-compliant).
+    image: <REDACTED_HOST>/nicholas/freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    pull_policy: if_not_present
+
+    environment:
+      TZ: ${TZ}
+      CRON_MIN: "13,43"
+      TRUSTED_PROXY: "<REDACTED_IP>/12,<REDACTED_IP>/16,<REDACTED_IP>/8,<REDACTED_IP>/10"
+      FRESHRSS_INSTALL: "--api-enabled --base-url https://rss.${DOMAIN_NAME}"
+      FRESHRSS_USER: "--api-password ${FRESHRSS_API_PASSWORD} --email <REDACTED_EMAIL> --language en --password ${FRESHRSS_ADMIN_PASSWORD} --user admin"
+
+    volumes:
+      - freshrss_data:/var/www/FreshRSS/data
+
+    networks:
+      - toolsproxy
+
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=toolsproxy
+      - traefik.http.routers.freshrss.entrypoints=websecure
+      - traefik.http.routers.freshrss.rule=Host(`rss.${DOMAIN_NAME}`)
+      - traefik.http.routers.freshrss.service=freshrss
+      - traefik.http.services.freshrss.loadbalancer.server.port=80
+      - traefik.http.routers.freshrss.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.freshrss.tls.domains[0].main=rss.${DOMAIN_NAME}
+      - traefik.http.routers.freshrss.middlewares=lan-only
+      - ha.monitor=true
+      - ha.category=tools
+      - ha.compose-file=Docker-NonCritical/Tools/FreshRSS/freshrss.yml
+      - ha.service-name=freshrss
+
+    healthcheck:
+      test: ["CMD-SHELL", "php cli/health.php || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

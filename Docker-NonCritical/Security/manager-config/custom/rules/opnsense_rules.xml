@@ -1,0 +1,50 @@
+<!--
+  Custom OPNsense / firewall rules for Wazuh.
+  Pairs with custom/decoders/opnsense_decoders.xml.
+-->
+<group name="opnsense,firewall,">
+  <rule id="100100" level="3">
+    <decoded_as>opnsense</decoded_as>
+    <description>OPNsense syslog message received</description>
+  </rule>
+
+  <rule id="100101" level="7">
+    <decoded_as>opnsense-filterlog</decoded_as>
+    <match>block</match>
+    <description>OPNsense blocked a packet (firewall deny)</description>
+  </rule>
+
+  <rule id="100102" level="10">
+    <decoded_as>opnsense-filterlog</decoded_as>
+    <match>block</match>
+    <srcip><REDACTED_IP>/16</srcip>
+    <description>OPNsense blocked outbound traffic from a LAN host</description>
+  </rule>
+</group>
+
+<!--
+  Manager-side command-monitor rules. The localfile command monitors
+  defined in wazuh_manager.conf emit plain text; alert when a critical
+  host service is reported DOWN.
+-->
+<group name="host-health,wazuh-manager,">
+  <rule id="100200" level="9">
+    <match>DOWN:</match>
+    <description>Critical host service reported DOWN by Wazuh manager command monitor</description>
+  </rule>
+  <rule id="100201" level="10">
+    <match>wazuh-indexer</match>
+    <match>DOWN:</match>
+    <description>wazuh-indexer host service DOWN — alert pipeline at risk</description>
+  </rule>
+</group>
+
+<!--
+  SSH brute-force signal from the manager's own auth log monitor.
+-->
+<group name="ssh-auth,wazuh-manager,">
+  <rule id="100300" level="8">
+    <match>failed</match>
+    <description>SSH authentication failures detected on Wazuh manager host</description>
+  </rule>
+</group>

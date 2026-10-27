@@ -1,0 +1,30 @@
+services:
+  registry:
+    image: registry:2
+    container_name: docker-registry
+    restart: unless-stopped
+    networks:
+      - aiproxy
+    ports:
+      - "5000:5000"
+    volumes:
+      - /mnt/data/docker-registry:/var/lib/registry
+      - /srv/traefik/dynamic/registry.yml:/etc/docker/registry/config.yml:ro
+    environment:
+      - REGISTRY_HTTP_ADDR=0.0.0.0:5000
+      - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/var/lib/registry
+      - REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.registry.rule=Host(`<REDACTED_HOST>`)"
+      - "traefik.http.routers.registry.entrypoints=websecure"
+      - "traefik.http.routers.registry.tls.certresolver=cloudflare"
+      - "traefik.http.routers.registry.tls.domains[0].main=<REDACTED_HOST>"
+      - "traefik.http.services.registry.loadbalancer.server.port=5000"
+      - "traefik.http.middlewares.registry-forwardauth.forwardauth.address=https://<REDACTED_HOST>/outpost.goauthentik.io/auth/traefik"
+      - "traefik.http.middlewares.registry-forwardauth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.routers.registry.middlewares=lan-only@docker,registry-forwardauth@docker"
+      - "traefik.docker.network=aiproxy"
+networks:
+  aiproxy:
+    external: true

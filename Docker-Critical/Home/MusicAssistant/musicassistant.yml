@@ -1,0 +1,32 @@
+services:
+  music-assistant-skill:
+    image: <REDACTED_HOST>/nicholas/alams154/music-assistant-skill:latest
+    container_name: music-assistant-skill
+    restart: unless-stopped
+    networks:
+      - homeproxy
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - SKILL_HOSTNAME=alexa.${DOMAIN_NAME}
+      - MA_HOSTNAME=${MA_HOSTNAME:<REDACTED_HOST>}
+      - PORT=5000
+      - DEBUG_PORT=5678
+      - LOCALE=en-US
+      - AWS_DEFAULT_REGION=us-east-1
+      - SKIP_URL_VALIDATION=false
+      - APP_USERNAME=${ALEXA_SKILL_APP_USERNAME:-}
+      - APP_PASSWORD=${ALEXA_SKILL_APP_PASSWORD:-}
+    volumes:
+      - /srv/music-assistant/alexa-ask:/root/.ask
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.musicassistant-alexa.entrypoints=websecure
+      - traefik.http.routers.musicassistant-alexa.rule=Host(`alexa.${DOMAIN_NAME}`)
+      - traefik.http.routers.musicassistant-alexa.tls=true
+      - traefik.http.routers.musicassistant-alexa.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.musicassistant-alexa.service=musicassistant-alexa
+      - traefik.http.services.musicassistant-alexa.loadbalancer.server.port=5000
+
+networks:
+  homeproxy:
+    external: true

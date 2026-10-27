@@ -1,0 +1,106 @@
+# Docker Container Management Dashboard - Integrated with Dockhand
+# Dockhand UI: https://dockhand.${DOMAIN_NAME}
+# Dockhand is the primary Docker container management tool for all hosts
+
+type: vertical-stack
+cards:
+  # Dockhand status and links
+  - type: markdown
+    content: |
+      ## 🐳 Docker Container Management
+      **Manager:** [Dockhand](https://dockhand.${DOMAIN_NAME})
+      **Status:** {{ states('sensor.dockhand_status') | title }}
+      **Managed Hosts:** <REDACTED_HOST>, <REDACTED_HOST>
+      
+      All containers with `ha.monitor=true` labels are managed via Dockhand.
+      Use the Dockhand UI for container updates, restarts, and monitoring.
+
+  # Quick action buttons
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: button
+        name: Open Dockhand
+        icon: mdi:docker
+        tap_action:
+          action: url
+          url: "https://dockhand.${DOMAIN_NAME}"
+      - type: button
+        name: Refresh Status
+        icon: mdi:reload
+        tap_action:
+          action: call-service
+          service: input_button.press
+          target:
+            entity_id: input_button.dockhand_refresh_containers
+      - type: button
+        name: Update Critical
+        icon: mdi:update
+        tap_action:
+          action: call-service
+          service: input_button.press
+          target:
+            entity_id: input_button.dockhand_update_all_critical
+
+  # Dockhand status card
+  - type: entities
+    title: "Dockhand Management"
+    show_header_toggle: false
+    entities:
+      - entity: sensor.dockhand_status
+        name: Status
+      - entity: sensor.dockhand_management_host
+        name: Management Host
+
+  # Hermes Agent section
+  - type: markdown
+    content: |
+      ## 🤖 Hermes Agent
+      **Dashboard:** [hermes.${DOMAIN_NAME}](https://hermes.${DOMAIN_NAME})
+      **Status:** {{ states('sensor.hermes_gateway_status') | title }}
+      
+      Hermes runs in Docker on the noncritical host. Use Dockhand for restart/logs.
+
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: button
+        name: Open Hermes Dashboard
+        icon: mdi:robot-outline
+        tap_action:
+          action: url
+          url: "https://hermes.${DOMAIN_NAME}"
+      - type: button
+        name: Restart Hermes Gateway
+        icon: mdi:restart
+        tap_action:
+          action: call-service
+          service: button.press
+          target:
+            entity_id: button.restart_hermes_gateway
+      - type: button
+        name: View Dockhand
+        icon: mdi:docker
+        tap_action:
+          action: url
+          url: "https://dockhand.${DOMAIN_NAME}"
+
+  # Info card
+  - type: markdown
+    content: |
+      ### Container Management
+      
+      **For container operations, use Dockhand:**
+      - View container status and resource usage
+      - Start, stop, restart containers
+      - Check logs and inspect container details
+      - Manage container updates via Watchtower labels
+      
+      **Features:**
+      - Multi-host Docker management (critical + non-critical)
+      - OIDC authentication via Authentik
+      - Real-time container status monitoring
+      - Container restart and management UI
+

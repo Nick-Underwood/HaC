@@ -1,0 +1,52 @@
+name: Deploy Docker Exporters
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/docker-exporters.yml"
+      - ".forgejo/workflows/deploy-docker-exporters.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+      - name: Write .env (DOCKER_HOST = this node's real hostname)
+        run: |
+          set -e
+          # <REDACTED_HOST>'s actual hostname is <REDACTED_HOST> (note upstream typo). The
+          # cadvisor DOCKER_HOST_LABEL env uses this so Prometheus attributes
+          # series correctly. (Forgejo var creation is unavailable via API on
+          # this version, so it's hardcoded here per host role.)
+          echo "DOCKER_HOST=<REDACTED_HOST>" > /tmp/dexport.env
+          echo "CADVISOR_PORT=18080" >> /tmp/dexport.env
+
+      # Pin deployment to a PERSISTENT host path (/srv/docker-exporters), NOT the
+      # runner's transient checkout. Relative compose/--env-file paths otherwise
+      # resolve to /tmp/act-runner/... and break when the workspace is pruned.
+      - name: Stage compose into /srv/docker-exporters
+        run: |
+          set -e
+          sudo mkdir -p /srv/docker-exporters
+          sudo cp -f Docker-Critical/Home/docker-exporters.yml /srv/docker-exporters/docker-exporters.yml
+          sudo cp -f /tmp/dexport.env /srv/docker-exporters/docker-exporters.env
+          sudo chown -R nicholas:nicholas /srv/docker-exporters
+
+      - name: Deploy cAdvisor + node-exporter
+        run: docker compose -f /srv/docker-exporters/docker-exporters.yml --env-file /srv/docker-exporters/docker-exporters.env up -d --force-recreate
+
+      - name: Show running exporters
+        run: docker compose -f /srv/docker-exporters/docker-exporters.yml ps

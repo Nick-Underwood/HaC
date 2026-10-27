@@ -1,0 +1,55 @@
+services:
+  web:
+    image: <REDACTED_HOST>/nicholas/karakeep-app/karakeep:release
+    container_name: karakeep
+    restart: unless-stopped
+    volumes:
+      - /srv/karakeep/data:/data
+    networks:
+      - toolsproxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.kara.entrypoints=websecure
+      - traefik.http.routers.kara.rule=Host(`<REDACTED_HOST>`)
+      - traefik.http.routers.kara.service=kara
+      - traefik.http.services.kara.loadbalancer.server.port=3000
+      - traefik.http.routers.kara.tls.certresolver=cloudflare
+      - traefik.http.routers.kara.tls.domains[0].main=<REDACTED_HOST>
+    environment:
+      MEILI_ADDR: http://localhost:7700
+      BROWSER_WEB_URL: http://localhost:9222
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: https://<REDACTED_HOST>
+      OLLAMA_BASE_URL: https://<REDACTED_HOST>
+      INFERENCE_TEXT_MODEL: gemma3:4b
+      INFERENCE_IMAGE_MODEL: gemma3:4b
+      INFERENCE_CONTEXT_LENGTH: 8192
+      CRAWLER_VIDEO_DOWNLOAD: "true"
+      DATA_DIR: /data
+  chrome:
+    image: <REDACTED_HOST>/nicholas/zenika/alpine-chrome:latest
+    restart: unless-stopped
+    command:
+      - --no-sandbox
+      - --disable-gpu
+      - --disable-dev-shm-usage
+      - --remote-debugging-address=0.0.0.0
+      - --remote-debugging-port=9222
+      - --hide-scrollbars
+    network_mode: service:web
+  meilisearch:
+    image: <REDACTED_HOST>/nicholas/getmeili/meilisearch:v1.13.3
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: production
+    network_mode: service:web
+    volumes:
+      - /srv/karakeep/meili_data:/meili_data
+networks:
+  toolsproxy:
+    external: true
+# dockhand-migrated: managed by Dockhand git-stack (auto-deploy via Forgejo webhook + proxy)
+# Secrets MEILI_MASTER_KEY and NEXTAUTH_SECRET are supplied via Dockhand stack Variables (no .env file).

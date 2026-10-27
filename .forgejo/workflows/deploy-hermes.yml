@@ -1,0 +1,178 @@
+name: Deploy Hermes (NonCritical)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Automation/AI/Hermes/**"
+      - ".forgejo/workflows/deploy-hermes.yml"
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: 'Containers to redeploy (default: hermes-gateway,hermes-dashboard,mnemosyne-sync)'
+        required: false
+        default: 'hermes-gateway,hermes-dashboard,mnemosyne-sync'
+
+concurrency:
+  group: hermes-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Automation/AI/Hermes/hermes.yml"
+
+      - name: Authenticate to local registry
+        run: |
+          # Image is mirrored into the local Forgejo registry (see mirror-hermes.yml)
+          # so deploys + restarts never depend on ghcr.io. SHTF-local.
+          echo "${{ secrets.FORGEJO_TOKEN }}" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+
+      - name: Deploy Hermes
+        working-directory: "./Docker-NonCritical/Automation/AI/Hermes"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          AUTHENTIK_URL: ${{ vars.AUTHENTIK_URL }}
+          TZ: ${{ vars.TZ }}
+          HERMES_PUBLIC_URL: ${{ vars.HERMES_PUBLIC_URL }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          # The Hermes image reads HASS_URL / HASS_TOKEN. We source the real
+          # values from Forgejo vars/secrets (HA_URL / HA_LONG_LIVED_TOKEN)
+          # and map them onto the names the container expects.
+          HASS_URL: ${{ vars.HA_URL }}
+          HASS_TOKEN: ${{ secrets.HA_LONG_LIVED_TOKEN }}
+          HERMES_API_KEY: ${{ secrets.HERMES_API_KEY }}
+          HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH: ${{ secrets.HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH }}
+          HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${{ secrets.HERMES_DASHBOARD_BASIC_AUTH_SECRET }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          HERMES_DASHBOARD_OAUTH_CLIENT_SECRET: ${{ secrets.HERMES_DASHBOARD_OAUTH_CLIENT_SECRET }}
+          HERMES_DASHBOARD_OIDC_CLIENT_ID: ${{ secrets.HERMES_DASHBOARD_OIDC_CLIENT_ID }}
+          MNEMOSYNE_SYNC_API_KEY: ${{ secrets.MNEMOSYNE_SYNC_API_KEY }}
+        run: |
+          # Do not enable shell tracing here: the step handles deployment secrets.
+          set -eu
+          WHOAMI=$(id -un)
+          echo "Running as: $WHOAMI (HOME=$HOME)"
+
+          DATA_DIR="${HERMES_DATA_DIR:-$HOME/.hermes-noncritical}"
+          mkdir -p "$DATA_DIR"
+
+          defined_image=$(grep -m1 'image:' hermes.yml | awk '{print $2}')
+          running_gateway=$(docker inspect -f '{{.Config.Image}}' hermes-gateway 2>/dev/null || echo "none")
+          running_dashboard=$(docker inspect -f '{{.Config.Image}}' hermes-dashboard 2>/dev/null || echo "none")
+          running_image=$([ "$running_gateway" = "$running_dashboard" ] && echo "$running_gateway" || echo "mixed")
+          checksum=$(sha256sum hermes.yml | awk '{print $1}')
+          old=$(cat "$DATA_DIR/.hermes_checksum" 2>/dev/null || echo "")
+
+          echo "defined_image=$defined_image running_image=$running_image checksum=$checksum old=$old"
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying Hermes (NonCritical)..."
+
+            # Validate required vars/secrets only when a redeploy is actually needed
+            for var in DOMAIN_NAME CERTRESOLVER HERMES_PUBLIC_URL OLLAMA_BASE_URL HASS_URL HASS_TOKEN HERMES_API_KEY HERMES_DASHBOARD_OIDC_CLIENT_ID HERMES_DASHBOARD_OAUTH_CLIENT_SECRET MNEMOSYNE_SYNC_API_KEY; do
+              eval val=\$$var
+              if [ -z "$val" ]; then
+                echo "Missing required variable: $var" >&2
+                exit 1
+              fi
+            done
+
+            # Rewrite the bind mount target to a writable local dir (no sudo needed)
+            # and CREATE it — Docker cannot bind-mount a path that does not exist,
+            # which left the containers stuck in "Created" and failed the deploy.
+            # Match the short-form volume syntax: "- /srv/hermes:/data"
+            mkdir -p "$DATA_DIR/hermes-data"
+            sed -i.bak "s#/srv/hermes#$DATA_DIR/hermes-data#g" hermes.yml
+            rm -f hermes.yml.bak
+            export HERMES_DASHBOARD_OAUTH_CLIENT_SECRET="${HERMES_DASHBOARD_OAUTH_CLIENT_SECRET}"
+            export HERMES_DASHBOARD_OIDC_CLIENT_ID="${HERMES_DASHBOARD_OIDC_CLIENT_ID}"
+            export MNEMOSYNE_SYNC_API_KEY="${MNEMOSYNE_SYNC_API_KEY}"
+            docker compose -p hermes -f hermes.yml config --quiet
+            # Purge stale hard-coded-name containers left by a previous deploy
+            # that used a different project name or a manual docker run. Without
+            # this, --force-recreate fails with "container name already in use".
+            for svc in hermes-gateway hermes-dashboard mnemosyne-sync; do
+              docker container rm -f "$svc" 2>/dev/null || true
+            done
+            docker compose -p hermes -f hermes.yml down --remove-orphans
+            docker compose -p hermes -f hermes.yml up -d --force-recreate
+
+            echo "$checksum" > "$DATA_DIR/.hermes_checksum"
+          else
+            echo "No Hermes changes detected; skipping redeploy"
+          fi
+
+      - name: Wait for services to stabilize
+        working-directory: "./Docker-NonCritical/Automation/AI/Hermes"
+        run: |
+          set -eu
+          attempt=0
+          while [ "$attempt" -lt 12 ]; do
+            gateway_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' hermes-gateway 2>/dev/null || echo missing)
+            dashboard_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' hermes-dashboard 2>/dev/null || echo missing)
+            mnemosyne_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' mnemosyne-sync 2>/dev/null || echo missing)
+            if [ "$gateway_health" = "healthy" ] && [ "$dashboard_health" = "healthy" ] && [ "$mnemosyne_health" = "healthy" ]; then
+              echo "Hermes containers healthy"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Waiting for Hermes health (attempt $attempt/12): gateway=$gateway_health dashboard=$dashboard_health mnemosyne=$mnemosyne_health"
+            sleep 5
+          done
+          docker compose -p hermes -f hermes.yml ps
+          echo "Hermes containers did not become healthy" >&2
+          exit 1
+
+      - name: Verify Hermes services
+        working-directory: "./Docker-NonCritical/Automation/AI/Hermes"
+        run: |
+          set -eu
+          # Fail-fast: verify all three containers are running
+          for svc in hermes-gateway hermes-dashboard mnemosyne-sync; do
+            if ! docker ps --filter "name=^${svc}$" --format '{{.Status}}' | head -1 | grep -q 'Up'; then
+              echo "Container $svc is not running" >&2
+              docker compose -p hermes -f hermes.yml ps
+              exit 1
+            fi
+          done
+
+          # Gateway API health (not just container health)
+          if ! docker exec hermes-gateway curl -sf http://127.0.0.1:8642/health; then
+            echo "Gateway API health check failed" >&2
+            exit 1
+          fi
+
+          # Mnemosyne Sync API health (not just container health)
+          if ! docker exec mnemosyne-sync python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"; then
+            echo "Mnemosyne Sync health check failed" >&2
+            exit 1
+          fi
+
+          echo "All Hermes services verified"
+
+      - name: Verify Hermes dashboard health
+        env:
+          HERMES_PUBLIC_URL: ${{ vars.HERMES_PUBLIC_URL }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$HERMES_PUBLIC_URL/" || true)
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ] || [ "$STATUS" = "302" ]; then
+            echo "Dashboard reachable (HTTP $STATUS)"
+          else
+            echo "Dashboard HTTP $STATUS — check Traefik routing" >&2
+            exit 1
+          fi

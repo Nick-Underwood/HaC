@@ -1,0 +1,103 @@
+# SearXNG settings for searx-direct — non-VPN-friendly engines only
+# Google, Brave, Startpage, Mojeek, Qwant route through direct internet
+# Deployed to /srv/searx-direct/config/settings.yml via deploy-searx workflow
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "search-direct"
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  default_lang: "en"
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 60
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  base_url: "https://search.__DOMAIN_NAME__/"
+  secret_key: "__SECRET_KEY__"
+  limiter: false
+  public_instance: false
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 20.0
+  pool_connections: 50
+  pool_maxsize: 25
+  enable_http2: true
+
+engines:
+  # ── Non-VPN-friendly engines — run direct (no Gluetun proxy) ──
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: false
+
+  - name: mojeek
+    engine: mojeek
+    shortcut: mj
+    disabled: false
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: false
+
+  - name: google images
+    engine: google_images
+    shortcut: gimg
+    disabled: false
+
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    disabled: false
+
+  # ── Disable VPN-friendly engines — they run on the VPN instance ──
+  - name: bing
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: yahoo
+    disabled: true
+  - name: bing news
+    disabled: true
+  - name: duckduckgo news
+    disabled: true
+  - name: reddit
+    disabled: true
+  - name: github
+    disabled: true
+  - name: bing images
+    disabled: true
+  - name: bing videos
+    disabled: true
+  - name: youtube
+    disabled: true
+  - name: ahmia
+    disabled: true
+
+categories_as_tabs:
+  general:
+    - general
+  news:
+    - news
+  images:
+    - images

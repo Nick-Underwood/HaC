@@ -1,0 +1,15 @@
+services:
+  netbox:
+    image: <REDACTED_HOST>/nicholas/netbox:latest-plugins
+    build:
+      context: .
+      dockerfile: Dockerfile-Plugins
+    pull_policy: never
+
+  netbox-worker:
+    image: <REDACTED_HOST>/nicholas/netbox:latest-plugins
+    pull_policy: never
+
+  netbox-housekeeping:
+    image: <REDACTED_HOST>/nicholas/netbox:latest-plugins
+    pull_policy: never

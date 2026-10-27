@@ -1,0 +1,22 @@
+<!--
+  Custom OPNsense decoders for Wazuh.
+
+  IMPORTANT: rules in opnsense_rules.xml reference decoded_as
+  "opnsense-filterlog" — a decoder with that name MUST exist or analysisd
+  refuses to start ("Invalid decoder name").
+
+  The fw agent (005) tails /var/log/filter.log (shared agent.conf
+  localfile); those lines are decoded by the STOCK pf decoder/rules
+  (verified 2026-08-14: rule 87702 fires on real blocks). The
+  opnsense-filterlog decoder below covers OPNsense REMOTE syslog (program
+  tag "opnsense") if remote forwarding is ever configured to 514/UDP.
+-->
+<decoder name="opnsense">
+  <program_name>^opnsense</program_name>
+</decoder>
+
+<decoder name="opnsense-filterlog">
+  <parent>opnsense</parent>
+  <regex>^filterlog: \d+,\d+,\d+,\S+,(\w+),(\w+),(\w+),(\S+),(\d+),(\S+),(\d+),(S?)</regex>
+  <order>action,dir,proto,src,sport,dst,dport,state</order>
+</decoder>

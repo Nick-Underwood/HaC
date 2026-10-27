@@ -1,0 +1,96 @@
+services:
+  hermes-gateway:
+    image: ghcr.io/nousresearch/hermes-agent:main
+    container_name: hermes-gateway
+    restart: unless-stopped
+    # SHTF: don't depend on registry reachability for restarts
+    pull_policy: if_not_present
+    user: "1000:1000"
+    environment:
+      HERMES_HOME: /data
+      HERMES_PROFILE: default
+      # Local-only stack: Ollama on Windows desktop + HAOS
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      HASS_URL: ${HASS_URL}
+      HASS_TOKEN: ${HASS_TOKEN}
+      # API server for local WebUI / desktop app / HA integrations
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_KEY}
+      API_SERVER_CORS_ORIGINS: ${HERMES_PUBLIC_URL}
+    volumes:
+      - hermes-data:/data
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hermes-api.rule=Host(`${HERMES_PUBLIC_URL}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.hermes-api.entrypoints=websecure"
+      - "traefik.http.routers.hermes-api.tls=true"
+      - "traefik.http.routers.hermes-api.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-api.middlewares=hermes-auth"
+      - "traefik.http.services.hermes-api.loadbalancer.server.port=8642"
+      - "traefik.http.routers.hermes-gateway.rule=Host(`${HERMES_PUBLIC_URL}`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.hermes-gateway.entrypoints=websecure"
+      - "traefik.http.routers.hermes-gateway.tls=true"
+      - "traefik.http.routers.hermes-gateway.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-gateway.middlewares=hermes-auth"
+      - "traefik.http.services.hermes-gateway.loadbalancer.server.port=8642"
+
+  hermes-dashboard:
+    image: ghcr.io/nousresearch/hermes-agent:main
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    # SHTF: don't depend on registry reachability for restarts
+    pull_policy: if_not_present
+    user: "1000:1000"
+    environment:
+      HERMES_HOME: /data
+      HERMES_PROFILE: default
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      HERMES_DASHBOARD_HOST: "127.0.0.1"
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_PUBLIC_URL: "https://${HERMES_PUBLIC_URL}"
+    volumes:
+      - hermes-data:/data
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hermes-dashboard.rule=Host(`${HERMES_PUBLIC_URL}`)"
+      - "traefik.http.routers.hermes-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.hermes-dashboard.tls=true"
+      - "traefik.http.routers.hermes-dashboard.tls.certresolver=${CERTRESOLVER}"
+      - "traefik.http.routers.hermes-dashboard.middlewares=hermes-auth"
+      - "traefik.http.services.hermes-dashboard.loadbalancer.server.port=9119"
+    command: >
+      sh -c "
+        if [ ! -f /data/.hermes-init-done ]; then
+          echo 'Initializing HERMES_HOME';
+          mkdir -p /data/.hermes;
+          touch /data/.hermes-init-done;
+        fi &&
+        cd /app/hermes-agent/web &&
+        npm ci &&
+        npm run build &&
+        cd /app &&
+        python -m hermes_cli.main dashboard --host 127.0.0.1 --port 9119 --skip-build
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9119/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  hermes-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/nicholas/.hermes-noncritical/hermes-data
+
+networks:
+  traefik:
+    external: true

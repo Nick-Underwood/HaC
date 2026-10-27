@@ -1,0 +1,123 @@
+<!--
+  Custom Docker container-lifecycle rules (fix for Docker Engine 29.x).
+
+  Stock rules 87901-87911 match on docker.status, but Docker Engine 29+
+  removed the legacy "status" field from the events API — events only
+  carry "Action". Those stock rules therefore never fire on modern Docker
+  (only the network rules, which match docker.Action, do). These rules
+  mirror the stock lifecycle rules using data.docker.Action, chained to
+  the same parent (87900, the docker integration header).
+
+  NOTE: unlike the old "status" format, raw container events carry no
+  command info for exec_start (only an execID), so the "shell session"
+  detection (stock 87908) cannot be reproduced from the event alone.
+-->
+<group name="docker,">
+  <rule id="100400" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^create$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) created</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100401" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^start$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) started</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100402" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^stop$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) stopped</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100403" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^restart$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) restarted</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100404" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^pause$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) paused</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100405" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^unpause$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) unpaused</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100406" level="5">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^destroy$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) destroyed</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100407" level="4">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^die$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) died</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100408" level="5">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^kill$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) killed</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100409" level="4">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^oom$</field>
+    <description>Docker: Container $(docker.Actor.Attributes.name) ran out of memory</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100410" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^exec_start$</field>
+    <description>Docker: Command launched in container $(docker.Actor.Attributes.name)</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100411" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^exec_create$</field>
+    <description>Docker: Exec process created in container $(docker.Actor.Attributes.name)</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100412" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^extract-to-dir$</field>
+    <description>Docker: Copied a file from host to $(docker.Actor.Attributes.name)</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100413" level="3">
+    <if_sid>87900</if_sid>
+    <field name="docker.Action">^archive-path$</field>
+    <description>Docker: Copied a file from $(docker.Actor.Attributes.name) to host</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <!-- Host-side command-monitor alert rules. The localfile command monitors
+       in wazuh_manager.conf emit plain text; alert when a critical host
+       service is reported DOWN: docker.socket, wazuh-indexer, or
+       docker.service. Rule ID 100600 — chosen outside the 1002xx (host-health
+       in opnsense_rules.xml) and 1003xx (ssh-auth) ranges to avoid collisions. -->
+  <rule id="100600" level="10">
+    <description>Critical host service DOWN: $(command)</description>
+    <group>host-health,</group>
+  </rule>
+</group>

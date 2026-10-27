@@ -1,0 +1,152 @@
+# Monitoring stack: OPNsense + Home Assistant -> Prometheus -> Grafana
+# Deployed on <REDACTED_HOST> <REDACTED_HOST> via the HaC deploy-monitoring.yml
+# Forgejo Actions workflow. Scrapes the LAN (<REDACTED_IP>).
+# Omada intentionally NOT here: the v6 controller API login is locked
+# (error -1600 "Unsupported request path"). View Omada in its own UI.
+#
+# Alerting: Prometheus evaluates rules and ships alerts to Alertmanager, which
+# forwards them to the local ntfy instance (LAN-only, no cloud). If a scrape
+# target or docker host goes down, your phone gets paged over the LAN.
+#
+# Secrets come from Docker secrets mounted from ./secrets/* — the deploy
+# workflow writes them from Forgejo repo secrets at deploy time (gitignored,
+# never committed). No .env files.
+
+services:
+  prometheus:
+    image: <REDACTED_HOST>/nicholas/prom/prometheus:v2.53.1
+    container_name: mon-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prom_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=365d
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    networks:
+      - toolsproxy
+
+  alertmanager:
+    image: <REDACTED_HOST>/nicholas/prom/alertmanager:v0.27.0
+    container_name: mon-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager
+      - am_data:/alertmanager
+    secrets:
+      - ntfy_alert_user
+      - ntfy_alert_password
+    networks:
+      - toolsproxy
+  grafana:
+    image: <REDACTED_HOST>/nicholas/grafana/grafana:11.1.0
+    container_name: mon-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"   # 3000 collides with gardenplanner-api on this host
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://<REDACTED_HOST>
+      - GF_SECURITY_COOKIE_SECURE=true
+    secrets:
+      - grafana_admin_password
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=toolsproxy
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.rule=Host(`<REDACTED_HOST>`)
+      - traefik.http.routers.grafana.tls.certresolver=cloudflare
+      - traefik.http.routers.grafana.tls.domains[0].main=<REDACTED_HOST>
+      - traefik.http.routers.grafana-http.entrypoints=web
+      - traefik.http.routers.grafana-http.rule=Host(`<REDACTED_HOST>`)
+      - traefik.http.routers.grafana-http.middlewares=grafana-https-redirect@docker
+      - traefik.http.middlewares.grafana-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.grafana-https-redirect.redirectscheme.permanent=true
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    networks:
+      - toolsproxy
+
+  # Custom OPNsense exporter (built locally from the native REST API).
+  opnsense_exporter:
+    build: ./opnsense_exporter
+    container_name: mon-opnsense-exporter
+    restart: unless-stopped
+    ports:
+      - "9196:9196"
+    environment:
+      - OPN_URL=https://<REDACTED_HOST>
+      - OPN_API_KEY_FILE=/run/secrets/opnsense_api_key
+      - OPN_API_SECRET_FILE=/run/secrets/opnsense_api_secret
+      - OPN_VERIFY_SSL=true
+      - OPN_WAN_IF=wan
+    secrets:
+      - opnsense_api_key
+      - opnsense_api_secret
+    volumes:
+      - ./opnsense_exporter:/src
+    networks:
+      # Join toolsproxy so Prometheus (same network) can reach it by the
+      # service DNS name "opnsense_exporter". Without this the exporter only
+      # sits on the default bridge and Prometheus' scrape target stays DOWN.
+      toolsproxy:
+        aliases:
+          - opnsense_exporter
+
+  # Custom Home Assistant exporter. No HA-side config edit needed:
+  # uses a long-lived token against the REST API /states endpoint.
+  ha_exporter:
+    build: ./ha_exporter
+    container_name: mon-ha-exporter
+    restart: unless-stopped
+    ports:
+      - "9197:9197"
+    environment:
+      - HA_URL=http://<REDACTED_IP>:8123
+      - HA_TOKEN_FILE=/run/secrets/ha_token
+      - HA_ENTITIES=${HA_ENTITIES:-}
+    secrets:
+      - ha_token
+    networks:
+      # Same reason as opnsense_exporter: must share toolsproxy so Prometheus
+      # can resolve "ha_exporter" by DNS (default bridge is disjoint).
+      toolsproxy:
+        aliases:
+          - ha_exporter
+
+volumes:
+  prom_data:
+  grafana_data:
+  am_data:
+
+networks:
+  toolsproxy:
+    external: true
+
+secrets:
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+  opnsense_api_key:
+    file: ./secrets/opnsense_api_key
+  opnsense_api_secret:
+    file: ./secrets/opnsense_api_secret
+  ha_token:
+    file: ./secrets/ha_token
+  ntfy_alert_user:
+    file: ./secrets/ntfy_alert_user
+  ntfy_alert_password:
+    file: ./secrets/ntfy_alert_password

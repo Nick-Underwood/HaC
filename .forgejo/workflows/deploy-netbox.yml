@@ -1,0 +1,117 @@
+name: Deploy NetBox (Home)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/NetBox/**"
+      - ".forgejo/workflows/deploy-netbox.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+      - name: Verify compose file present
+        working-directory: Docker-Critical/Home/NetBox
+        run: ls -l netbox.yml
+
+      # Stage credentials into ./secrets (relative to the compose project dir).
+      # Source of truth for the 10 files = /srv/netbox/secrets on the runner host
+      # (written by populate-secrets.sh; gitignored, nicholas-owned). Copy them in
+      # so the checkout-local ./secrets dir is complete for the compose secret mounts.
+      - name: Stage secrets into ./secrets
+        working-directory: Docker-Critical/Home/NetBox
+        run: |
+          set -e
+          mkdir -p ./secrets
+          cp -f /srv/netbox/secrets/netbox_secret_key.txt         ./secrets/
+          cp -f /srv/netbox/secrets/netbox_api_token_peppers.txt  ./secrets/
+          cp -f /srv/netbox/secrets/netbox_db_password.txt        ./secrets/
+          cp -f /srv/netbox/secrets/netbox_smtp_password.txt      ./secrets/
+          cp -f /srv/netbox/secrets/opnsense_api_key.txt          ./secrets/
+          cp -f /srv/netbox/secrets/opnsense_api_secret.txt       ./secrets/
+          cp -f /srv/netbox/secrets/omada_username.txt            ./secrets/
+          cp -f /srv/netbox/secrets/omada_password.txt            ./secrets/
+          cp -f /srv/netbox/secrets/omada_openapi_client_id.txt     ./secrets/ 2>/dev/null || true
+          cp -f /srv/netbox/secrets/omada_openapi_client_secret.txt ./secrets/ 2>/dev/null || true
+          cp -f /srv/netbox/secrets/dockhand_username.txt          ./secrets/ 2>/dev/null || true
+          cp -f /srv/netbox/secrets/dockhand_password.txt          ./secrets/ 2>/dev/null || true
+          cp -f /srv/netbox/secrets/truenas_api_key.txt           ./secrets/
+          cp -f /srv/netbox/secrets/netbox_api_token.txt          ./secrets/
+          chmod 600 ./secrets/*.txt
+          ls -l ./secrets
+
+      # Write .env. netbox.yml reads these as NETBOX_*-prefixed (and a few bare)
+      # env names. Only existing repo vars / secrets are referenced.
+      # DOCKER_HOST / DOCKER_SITE are hardcoded to this node's concrete identity
+      # (real <REDACTED_HOST> hostname + NetBox site slug) because this Forgejo version does
+      # not expose variable creation via API.
+      - name: Write .env (relative, runner-owned)
+        working-directory: Docker-Critical/Home/NetBox
+        run: |
+          set -e
+          cat > ./.env <<'EOF'
+          DOMAIN_NAME=${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER=${{ vars.CERTRESOLVER }}
+          NETBOX_URL=${{ vars.NETBOX_URL }}
+          NETBOX_ALLOWED_HOSTS=${{ vars.NETBOX_ALLOWED_HOSTS }}
+          NETBOX_DB_NAME=${{ vars.NETBOX_DB_NAME }}
+          NETBOX_DB_USER=${{ vars.NETBOX_DB_USER }}
+          NETBOX_DB_HOST=${{ vars.NETBOX_DB_HOST }}
+          NETBOX_REDIS_HOST=${{ vars.NETBOX_REDIS_HOST }}
+          NETBOX_EMAIL_FROM=${{ vars.NETBOX_EMAIL_FROM }}
+          NETBOX_EMAIL_SERVER=${{ vars.NETBOX_EMAIL_SERVER }}
+          NETBOX_EMAIL_PORT=${{ vars.NETBOX_EMAIL_PORT }}
+          NETBOX_SMTP_USERNAME=${{ secrets.SMTP_USERNAME }}
+          NETBOX_METRICS_ENABLED=${{ vars.NETBOX_METRICS_ENABLED }}
+          TRUENAS_URL=${{ vars.TRUENAS_URL }}
+          OPNSENSE_URL=${{ vars.OPNSENSE_URL }}
+          OMADA_URL=${{ vars.OMADA_URL }}
+          OMADA_SITE_NAME=${{ vars.OMADA_SITE_NAME }}
+          DOCKHAND_URL=${{ vars.DOCKHAND_URL }}
+          DOCKER_HOST=<REDACTED_HOST>
+          DOCKER_SITE=u-acres
+          EOF
+          sed -i 's/^[[:space:]]*//' ./.env
+          chmod 600 ./.env
+          echo "--- .env written ---"
+          cat ./.env
+
+      # Pin the deployment to a PERSISTENT host path (/srv/netbox), NOT the
+      # runner's transient checkout. The compose uses relative bind mounts
+      # (./secrets, ./scripts, ./theme) + relative secret `file:` paths, so
+      # running it from the checkout made those resolve to /tmp/act-runner/...
+      # and die when the workspace was pruned (exit 127 / "bind source does not
+      # exist"). Copying into /srv/netbox makes every relative path durable.
+      - name: Stage compose + scripts + theme into /srv/netbox
+        run: |
+          set -e
+          sudo mkdir -p /srv/netbox/scripts /srv/netbox/theme
+          sudo cp -f Docker-Critical/Home/NetBox/netbox.yml /srv/netbox/netbox.yml
+          sudo cp -f Docker-Critical/Home/NetBox/.env /srv/netbox/.env
+          sudo cp -rf Docker-Critical/Home/NetBox/scripts/. /srv/netbox/scripts/
+          sudo cp -rf Docker-Critical/Home/NetBox/theme/. /srv/netbox/theme/ 2>/dev/null || true
+          sudo chown -R nicholas:nicholas /srv/netbox
+          ls -l /srv/netbox
+
+      - name: Compose config sanity check
+        run: docker compose -f /srv/netbox/netbox.yml config >/dev/null
+
+      - name: Deploy (compose up) from /srv/netbox
+        run: docker compose -f /srv/netbox/netbox.yml up -d --force-recreate
+
+      - name: Show running containers
+        run: docker compose -f /srv/netbox/netbox.yml ps

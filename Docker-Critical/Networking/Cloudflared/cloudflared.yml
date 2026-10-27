@@ -1,0 +1,10 @@
+services:
+  cloudflared:
+    image: <REDACTED_HOST>/nicholas/cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=${TZ:-America/Chicago}
+      - TUNNEL_TOKEN=${HA_CF_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run --token ${HA_CF_TUNNEL_TOKEN}

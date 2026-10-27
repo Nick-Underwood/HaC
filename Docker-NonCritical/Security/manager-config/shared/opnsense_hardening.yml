@@ -1,0 +1,220 @@
+# Security Configuration Assessment policy for OPNsense (FreeBSD-based)
+# Custom policy for <REDACTED_HOST> — distributed via shared/default group.
+# CIS OPNsense Firewall Benchmark v1.0.0 (BlackLabs mirror) informed.
+# Uses ONLY file-existence/content checks (no c: commands) so it runs on the
+# agent without sca.remote_commands=1 (cannot SSH to the firewall).
+# Check ids use the 90xxx range to avoid collisions with stock Wazuh policies.
+# NOTE: policy/requirements/checks MUST be top-level sibling keys (Wazuh SCA
+# format); nesting checks under policy makes the agent skip the file with
+# "Section 'checks' not found".
+# v3 (2026-08-13): SSH checks use OPNsense's real sshd path
+# (/usr/local/etc/ssh/sshd_config per CIS audit) with not-f fallback for the
+# SSH-disabled state; added CIS 2.1.1 GUI restriction, 3.1.2 anti-spoofing,
+# 4.1.1 Suricata IPS, 4.1.2 TLS syslog, 5.1.1 NTP, 5.1.2 DNSSEC/DoT.
+
+policy:
+  id: "opnsense_hardening"
+  file: "opnsense_hardening.yml"
+  name: "OPNsense Security Configuration Baseline"
+  description: "CIS OPNsense Firewall Benchmark v1.0.0-informed hardening baseline for OPNsense firewalls: SSH, web GUI, firewall rules, IDS/IPS, logging, NTP and DNS posture."
+  references:
+    - https://docs.opnsense.org/manual/hardening.html
+    - https://cis.blacklabs.team/opnsense.html
+
+requirements:
+  title: "Check that the endpoint is an OPNsense firewall"
+  description: "Runs only when OPNsense-specific markers are present (/etc/platform, /etc/version or the config.xml)."
+  condition: any
+  rules:
+    - 'f:/etc/platform -> r:^OPNsense'
+    - 'f:/etc/version -> r:^[0-9][0-9]\.[0-9]'
+    - 'f:/usr/local/etc/config.xml'
+
+checks:
+  # --- 2.1.2 SSH (key-based, root login disabled) ---
+  - id: 90001
+    title: "SSH: root login is disabled"
+    description: "The SSH daemon must not allow direct root logins. Passes when SSH is not exposed (no sshd_config)."
+    rationale: "Prevents credential attacks against the root account over SSH; administrative access should use a non-root user or key-based authentication."
+    remediation: "System > Settings > Administration > Secure Shell: Permit root user login = No."
+    compliance:
+      - cis: ["2.1.2"]
+    condition: any
+    rules:
+      - 'not f:/usr/local/etc/ssh/sshd_config'
+      - 'f:/usr/local/etc/ssh/sshd_config -> !r:^PermitRootLogin[ ]+yes'
+
+  - id: 90002
+    title: "SSH: password authentication is disabled"
+    description: "The SSH daemon must not allow password-based authentication (key-only). Passes when SSH is not exposed (no sshd_config)."
+    rationale: "Password authentication is susceptible to brute-force attacks; key-based authentication is the recommended alternative."
+    remediation: "System > Settings > Administration > Secure Shell: Permit password login = No."
+    compliance:
+      - cis: ["2.1.2"]
+    condition: any
+    rules:
+      - 'not f:/usr/local/etc/ssh/sshd_config'
+      - 'f:/usr/local/etc/ssh/sshd_config -> !r:^PasswordAuthentication[ ]+yes'
+
+  - id: 90003
+    title: "SSH: protocol 1 is not allowed"
+    description: "The SSH daemon must only use protocol version 2. Passes when SSH is not exposed (no sshd_config)."
+    rationale: "SSH protocol 1 has known cryptographic weaknesses and is deprecated."
+    remediation: "Ensure 'Protocol 2' (and no 'Protocol 1') in the SSH configuration."
+    compliance:
+      - cis: ["2.1.2"]
+    condition: any
+    rules:
+      - 'not f:/usr/local/etc/ssh/sshd_config'
+      - 'f:/usr/local/etc/ssh/sshd_config -> !r:^Protocol[ ]+1'
+
+  - id: 90004
+    title: "SSH: empty passwords are prohibited"
+    description: "The SSH daemon must not permit accounts with empty passwords. Passes when SSH is not exposed (no sshd_config)."
+    rationale: "Accounts with empty passwords can be trivially compromised."
+    remediation: "Set 'PermitEmptyPasswords no' in the SSH configuration."
+    compliance:
+      - cis: ["2.1.2"]
+    condition: any
+    rules:
+      - 'not f:/usr/local/etc/ssh/sshd_config'
+      - 'f:/usr/local/etc/ssh/sshd_config -> !r:^PermitEmptyPasswords[ ]+yes'
+
+  - id: 90005
+    title: "SSH: X11 forwarding is disabled"
+    description: "The SSH daemon must not allow X11 forwarding. Passes when SSH is not exposed (no sshd_config)."
+    rationale: "X11 forwarding expands the attack surface of the firewall management interface."
+    remediation: "Set 'X11Forwarding no' in the SSH configuration."
+    compliance:
+      - cis: ["2.1.2"]
+    condition: any
+    rules:
+      - 'not f:/usr/local/etc/ssh/sshd_config'
+      - 'f:/usr/local/etc/ssh/sshd_config -> !r:^X11Forwarding[ ]+yes'
+
+  # --- 2.1.1 Web GUI ---
+  - id: 90006
+    title: "Web GUI: HTTPS is enforced"
+    description: "The OPNsense web GUI must be served over HTTPS."
+    rationale: "Plain-HTTP GUI access exposes the session cookie and credentials to the network."
+    remediation: "System > Settings > Administration > Web GUI > Protocol: HTTPS."
+    compliance:
+      - cis: ["2.1.1"]
+    condition: all
+    rules:
+      - 'f:/usr/local/etc/config.xml -> r:<protocol>https</protocol>'
+
+  - id: 90007
+    title: "Web GUI: non-default port (recommended)"
+    description: "The web GUI should listen on a non-default port instead of 443."
+    rationale: "Moving the management GUI off the default port reduces automated scan exposure."
+    remediation: "System > Settings > Administration > Web GUI > TCP port: choose a non-default port."
+    compliance:
+      - cis: ["2.1.1"]
+    condition: all
+    rules:
+      - 'f:/usr/local/etc/config.xml -> !r:<port>443</port>'
+
+  - id: 90010
+    title: "Web GUI: restricted to management interface"
+    description: "The web GUI must not be reachable from WAN; it should listen on LAN/management interfaces only."
+    rationale: "Exposing the management GUI to the WAN invites credential attacks; restrict it to trusted networks."
+    remediation: "System > Settings > Administration > Web GUI > Listen Interfaces: LAN only."
+    compliance:
+      - cis: ["2.1.1"]
+    condition: all
+    rules:
+      - 'f:/usr/local/etc/config.xml -> !r:<interfaces>[^<]*wan[^<]*</interfaces>'
+
+  # --- 3.1 Firewall rules ---
+  - id: 90008
+    title: "Firewall: stateful packet filter (pf) is active"
+    description: "The pf ruleset must be loaded, proving the stateful firewall is enforcing traffic."
+    rationale: "The firewall is the primary enforcement point of the perimeter; an unloaded ruleset means no filtering."
+    remediation: "Check Firewall > Rules and reload the filter (the generated ruleset /tmp/rules.debug must exist)."
+    compliance:
+      - cis: ["3.1.1"]
+    condition: all
+    rules:
+      - 'f:/tmp/rules.debug'
+
+  - id: 90009
+    title: "Firewall: bogon network blocking is enabled"
+    description: "Interfaces should drop traffic from bogon (reserved/martian) address space. Accepts the OPNsense config element or live pf bogons tables as evidence."
+    rationale: "Bogons should never appear as valid traffic sources; blocking them stops spoofed-source attacks."
+    remediation: "Interfaces > [WAN] > Advanced: enable 'Block bogon networks'."
+    compliance:
+      - cis: ["3.1.2"]
+    condition: any
+    rules:
+      - 'f:/usr/local/etc/config.xml -> r:<blockbogons?>1</blockbogons?>'
+      - 'f:/tmp/rules.debug -> r:bogons'
+
+  - id: 90011
+    title: "Firewall: anti-spoofing is active"
+    description: "The pf ruleset must contain anti-spoofing (antispoof) protections."
+    rationale: "Anti-spoofing blocks traffic claiming source addresses from the wrong interface, preventing spoofed-source attacks."
+    remediation: "Anti-spoofing is enforced per interface by pf; verify no 'Disable anti-spoofing' options are set."
+    compliance:
+      - cis: ["3.1.2"]
+    condition: all
+    rules:
+      - 'f:/tmp/rules.debug -> r:antispoof'
+
+  # --- 4.1 IDS/IPS & logging ---
+  - id: 90012
+    title: "IDS/IPS: Suricata is enabled and running (IDS mode accepted)"
+    description: "Suricata must be enabled and running. This firewall deliberately runs in IDS mode (PCAP live); inline IPS is not required by site policy."
+    rationale: "A running Suricata engine provides network intrusion detection; this site accepts passive IDS mode with updated rulesets."
+    remediation: "Services > Intrusion Detection > Administration: Enabled = Yes; mode PCAP live (IDS) or Inline (IPS) per policy; keep rulesets updated."
+    compliance:
+      - cis: ["4.1.1"]
+    condition: all
+    rules:
+      - 'f:/var/run/suricata.pid'
+      - 'f:/usr/local/etc/config.xml -> r:<enabled>1</enabled>'
+
+  - id: 90013
+    title: "Logging: centralized remote syslog over TLS"
+    description: "Remote syslog forwarding should use TLS transport (port 6514) for confidentiality and integrity."
+    rationale: "Plaintext syslog allows on-path capture of firewall logs; TLS protects them in transit."
+    remediation: "System > Settings > Logging > Targets: add a remote syslog target with Transport = TLS, Port = 6514."
+    compliance:
+      - cis: ["4.1.2"]
+    condition: all
+    rules:
+      - 'f:/usr/local/etc/syslog-ng.conf -> r:6514'
+
+  # --- 5.1 NTP & DNS ---
+  - id: 90014
+    title: "NTP: time synchronization is configured"
+    description: "The firewall must synchronize time with upstream NTP servers."
+    rationale: "Accurate time is required for trustworthy log correlation and certificate validation."
+    remediation: "Services > Network Time > General: Enable = Yes and configure NTP servers (e.g. pool.ntp.org)."
+    compliance:
+      - cis: ["5.1.1"]
+    condition: all
+    rules:
+      - 'f:/etc/ntp.conf -> r:^server[ ]+[0-9a-zA-Z]'
+
+  - id: 90015
+    title: "DNS: Unbound DNSSEC validation is enabled"
+    description: "The local resolver must validate DNSSEC signatures."
+    rationale: "DNSSEC validation protects clients from DNS spoofing and cache poisoning."
+    remediation: "Services > Unbound DNS > General: DNSSEC = Enabled."
+    compliance:
+      - cis: ["5.1.2"]
+    condition: all
+    rules:
+      - 'f:/var/unbound/unbound.conf -> r:dnssec-enable: yes'
+
+  - id: 90016
+    title: "DNS: Unbound DNS over TLS (DoT) forwarding is enabled"
+    description: "Upstream DNS queries should be encrypted with DNS over TLS."
+    rationale: "DoT prevents on-path observation and tampering of DNS queries."
+    remediation: "Services > Unbound DNS > DNS over TLS: enable forwarding with DoT and add servers (e.g. 1.1.1.1:853)."
+    compliance:
+      - cis: ["5.1.2"]
+    condition: all
+    rules:
+      - 'f:/var/unbound/unbound.conf -> r:ssl-upstream: yes'

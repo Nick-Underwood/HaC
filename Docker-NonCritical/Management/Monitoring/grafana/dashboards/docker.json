@@ -1,0 +1,101 @@
+{
+  "title": "Docker - Hosts & Containers",
+  "uid": "docker-hosts",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "host",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(node_uname_info, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Host CPU Usage",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$host\"}[5m])) * 100)",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Host Memory Usage",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "(1 - (node_memory_MemAvailable_bytes{instance=~\"$host\"} / node_memory_MemTotal_bytes{instance=~\"$host\"})) * 100",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Host Disk Used %",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "(1 - (node_filesystem_avail_bytes{instance=~\"$host\",fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{instance=~\"$host\",fstype!~\"tmpfs|overlay|squashfs\"})) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container CPU (per container)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (instance,name) (rate(container_cpu_usage_seconds_total{instance=~\"$host\"}[5m])) * 100",
+          "legendFormat": "{{instance}} / {{name}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container Memory (per container)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (instance,name) (container_memory_usage_bytes{instance=~\"$host\"})",
+          "legendFormat": "{{instance}} / {{name}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Containers Running",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "count by (instance) (container_last_seen{instance=~\"$host\"})",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Hosts Up",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "targets": [
+        {
+          "expr": "count(up{job=~\"node-exporter\"})",
+          "legendFormat": "node-exporter"
+        }
+      ]
+    }
+  ]
+}

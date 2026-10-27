@@ -1,0 +1,39 @@
+# Docker host exporters: cAdvisor (per-container) + node-exporter (host).
+# Deployed on EACH docker host via the HaC deploy-docker-exporters.yml workflow.
+# Prometheus on <REDACTED_HOST> <REDACTED_HOST> scrapes these over the LAN (<REDACTED_IP>).
+# Local-first: only pulls gcr.io / prom images at deploy; no cloud deps at runtime.
+#
+# Host this runs on is identified by DOCKER_HOST (passed from the workflow /
+# repo var) so Prometheus labels the series correctly.
+
+services:
+  cadvisor:
+    image: <REDACTED_HOST>/nicholas/cadvisor/cadvisor:v0.49.1
+    container_name: mon-cadvisor
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "${CADVISOR_PORT:-8080}:8080"
+    environment:
+      - DOCKER_HOST_LABEL=${DOCKER_HOST}
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/lib/containerd/:/var/lib/containerd:ro
+      - /cgroup:/cgroup:ro
+
+  node-exporter:
+    image: <REDACTED_HOST>/nicholas/prom/node-exporter:v1.8.2
+    container_name: mon-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro

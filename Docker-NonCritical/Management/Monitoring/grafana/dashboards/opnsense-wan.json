@@ -1,0 +1,74 @@
+{
+  "title": "OPNsense - Network",
+  "uid": "opnsense-wan",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "interface",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(opnsense_interface_rx_bytes, interface)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "WAN Throughput (bits/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "rate(opnsense_interface_rx_bytes{interface=~\"$interface\"}[2m]) * 8", "legendFormat": "{{interface}} RX" },
+        { "expr": "rate(opnsense_interface_tx_bytes{interface=~\"$interface\"}[2m]) * 8", "legendFormat": "{{interface}} TX" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "WAN Packets/s",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "rate(opnsense_interface_rx_packets{interface=~\"$interface\"}[2m])", "legendFormat": "{{interface}} RX pkts" },
+        { "expr": "rate(opnsense_interface_tx_packets{interface=~\"$interface\"}[2m])", "legendFormat": "{{interface}} TX pkts" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway RTT (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "opnsense_gateway_rtt_ms", "legendFormat": "{{gateway}} RTT" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway Packet Loss (%)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "opnsense_gateway_loss_percentage", "legendFormat": "{{gateway}} loss" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway Status (1=up)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "opnsense_gateway_status", "legendFormat": "{{gateway}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "System Load / Temp",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "opnsense_system_load", "legendFormat": "load {{core}}" }
+      ]
+    }
+  ]
+}

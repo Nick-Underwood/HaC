@@ -1,0 +1,45 @@
+# Alertmanager config — LAN-only alert delivery via the local ntfy instance.
+# No cloud/email/Discord/Telegram. ntfy runs on <REDACTED_HOST> <REDACTED_HOST> and is
+# reachable from this stack by the Docker DNS name "ntfy" on the toolsproxy
+# network (verified: POST http://ntfy:80/monitoring with basic auth -> 200).
+#
+# Credentials:
+#   ./secrets/ntfy_alert_user and ./secrets/ntfy_alert_password are written at
+#   deploy time from Forgejo repo secrets (gitignored, never committed). The
+#   ntfy user "u-acres-mon" has write-only access to the "monitoring" topic.
+#
+# Note: Alertmanager's generic webhook POSTs its own JSON to ntfy; ntfy
+# publishes that payload as the message. The alert summary/description live in
+# the JSON, so the phone notification is self-describing.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: ntfy
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: ntfy
+      repeat_interval: 1h
+    - matchers:
+        - severity = "warning"
+      receiver: ntfy
+      repeat_interval: 12h
+
+receivers:
+  - name: ntfy
+    webhook_configs:
+      - send_resolved: true
+        # ntfy-alert is a dedicated docker-network alias for the ntfy
+        # container (avoids the host "<REDACTED_HOST>" DNS collision that
+        # makes some containers resolve "ntfy" to Traefik instead).
+        url: "http://ntfy-alert:80/monitoring"
+        max_alerts: 20
+        http_config:
+          basic_auth:
+            username_file: /run/secrets/ntfy_alert_user
+            password_file: /run/secrets/ntfy_alert_password

@@ -1,0 +1,71 @@
+name: Deploy ActualBudget (NonCritical)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-NonCritical/Tools/ActualBudget/**"
+      - ".forgejo/workflows/deploy-actualbudget.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+      - name: Verify compose file exists
+        run: ls -l "./Docker-NonCritical/Tools/ActualBudget/actualbudget.yml"
+
+      - name: Deploy ActualBudget
+        working-directory: "./Docker-NonCritical/Tools/ActualBudget"
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+        run: |
+          for var in DOMAIN_NAME CERTRESOLVER; do
+            eval val=\$$var
+            if [ -z "$val" ]; then
+              echo "Missing required variable: $var" >&2
+              exit 1
+            fi
+          done
+
+          defined_image=$(grep -m1 'image:' actualbudget.yml | awk '{print $2}')
+          running_image=$(docker inspect -f '{{.Config.Image}}' actualbudget 2>/dev/null || echo "none")
+          checksum=$(sha256sum actualbudget.yml | awk '{print $1}')
+          old=$(cat ~/.hac-noncritical/.actualbudget_checksum 2>/dev/null || echo "")
+
+          if [ "$defined_image" != "$running_image" ] || [ "$checksum" != "$old" ]; then
+            echo "Redeploying ActualBudget..."
+            mkdir -p ~/.hac-noncritical
+
+            docker compose -p actualbudget down --remove-orphans || true
+            docker compose -p actualbudget -f actualbudget.yml up -d
+            echo "$checksum" > ~/.hac-noncritical/.actualbudget_checksum
+          else
+            echo "No changes detected; skipping redeploy"
+          fi
+
+      - name: Wait for services to stabilize
+        run: sleep 15
+
+      - name: Verify endpoint
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5006/ 2>/dev/null || true)
+          echo "actualbudget container http: $CODE (expected 200 — container is on toolsproxy, Traefik fronts it)"
+          docker ps --filter name=actualbudget --format "{{.Names}} {{.Status}}"

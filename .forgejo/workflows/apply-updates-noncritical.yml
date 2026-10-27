@@ -1,0 +1,156 @@
+name: Apply Updates - Docker NonCritical
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: 'Containers to update (comma-separated, or "all" for all with updates)'
+        required: false
+        default: 'all'
+        type: string
+
+jobs:
+  apply-updates:
+    runs-on: <REDACTED_HOST>
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          ref: main
+
+      - name: Pull and recreate containers
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          PLEX_CLAIM: ${{ secrets.PLEX_CLAIM }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+        run: |
+          # Build container maps from running container labels (ha.monitor=true)
+          # This auto-discovers all monitored services — no hard-coded map to drift.
+          declare -A COMPOSE_MAP
+          declare -A SERVICE_MAP
+
+          echo "=== Building maps from running container labels ==="
+          containers_json=$(curl -s http://localhost:2375/containers/json?all=true)
+
+          while IFS= read -r line; do
+            container_name=$(echo "$line" | jq -r '.name')
+            compose_file=$(echo "$line" | jq -r '.compose_file')
+            service_name=$(echo "$line" | jq -r '.service_name')
+
+            if [ -n "$container_name" ] && [ "$container_name" != "null" ]; then
+              COMPOSE_MAP["$container_name"]="$compose_file"
+              SERVICE_MAP["$container_name"]="$service_name"
+              echo "Registered: $container_name -> $compose_file (service: $service_name)"
+            fi
+          done < <(echo "$containers_json" | jq -c '.[] | select(.Labels["ha.monitor"] == "true") | {name: .Names[0] | ltrimstr("/"), compose_file: .Labels["ha.compose-file"], service_name: .Labels["ha.service-name"]}')
+
+          updated=""
+
+          if [ "$CONTAINERS" = "all" ]; then
+            # Check all and update those with available updates
+            chmod +x ./scripts/check-docker-updates.sh
+            CONTAINERS=""
+            for container in "${!COMPOSE_MAP[@]}"; do
+              if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                echo "Checking $container..."
+                result=$(./scripts/check-docker-updates.sh "$container" 2>/dev/null)
+                # Script outputs JSON object starting with { if update available
+                if [ -n "$result" ] && [[ "$result" == "{"* ]]; then
+                  echo "  -> Update available"
+                  if [ -z "$CONTAINERS" ]; then
+                    CONTAINERS="$container"
+                  else
+                    CONTAINERS="${CONTAINERS},${container}"
+                  fi
+                else
+                  echo "  -> No update"
+                fi
+              fi
+            done
+            echo "Containers to update: $CONTAINERS"
+          fi
+
+          if [ -z "$CONTAINERS" ]; then
+            echo "No containers need updating"
+            exit 0
+          fi
+
+          echo "Containers to update: $CONTAINERS"
+
+          # Update each container
+          IFS=',' read -ra CONTAINER_LIST <<< "$CONTAINERS"
+          for container in "${CONTAINER_LIST[@]}"; do
+            container=$(echo "$container" | xargs)  # trim whitespace
+            compose_file="${COMPOSE_MAP[$container]}"
+            service_name="${SERVICE_MAP[$container]}"
+
+            if [ -n "$compose_file" ] && [ -f "$compose_file" ]; then
+              echo "Updating $container (service: $service_name) using $compose_file"
+
+              # Pull new image
+              image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+              if [ -n "$image" ]; then
+                docker pull "$image"
+              fi
+
+              # Stop and remove old container to avoid name conflicts
+              docker stop "$container" 2>/dev/null || true
+              docker rm "$container" 2>/dev/null || true
+
+              # Recreate container using service name
+              cd "$(dirname "$compose_file")"
+              docker compose -f "$(basename "$compose_file")" up -d "$service_name" || true
+              cd - > /dev/null
+
+              updated="${updated}${container}, "
+            else
+              echo "Warning: No compose file mapped for $container"
+            fi
+          done
+
+          echo "Updated containers: ${updated%, }"
+
+      - name: Wait for services to stabilize
+        run: sleep 15
+
+      - name: Notify Home Assistant of completion
+        continue-on-error: true
+        env:
+          HA_URL: ${{ vars.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_LONG_LIVED_TOKEN }}
+          CONTAINERS: ${{ github.event.inputs.containers }}
+          UPDATED: ${{ env.updated }}
+        run: |
+          # Use the actually updated containers if available, otherwise the input
+          containers_list="${UPDATED:-${CONTAINERS}}"
+
+          # Build payload with jq for proper JSON
+          payload=$(jq -n \
+            --arg host "<REDACTED_HOST>" \
+            --arg containers "$containers_list" \
+            '{host: $host, containers: $containers}')
+
+          echo "Sending payload: $payload"
+
+          # Retry up to 3 times with 10 second delay
+          for i in 1 2 3; do
+            if curl -s --fail --max-time 30 -X POST \
+              -H "Authorization: Bearer ***" \
+              -H "Content-Type: application/json" \
+              -d "$payload" \
+              "${HA_URL}/api/events/docker_updates_applied"; then
+              echo "Successfully notified Home Assistant"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Failed to notify Home Assistant after 3 attempts"

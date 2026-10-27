@@ -1,0 +1,107 @@
+name: Mirror all third-party images to local Forgejo registry
+
+# SHTF-compliant: every non-self-maintained image is mirrored to the local
+# <REDACTED_HOST> Forgejo registry so deploys/restart never depend on external
+# registries (Docker Hub, ghcr.io, gcr.io, etc.).
+#
+# Usage: Forgejo Actions → "Mirror all third-party images to local Forgejo registry"
+#        → Run workflow. Or trigger via `act run` on <REDACTED_HOST>.
+#
+# Mappings are read from mirror-mappings.txt (tab-separated: source → target).
+# The workflow pulls each source, tags it for the local registry, and pushes it.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly 3:00 AM Central (08:00 UTC winter / 07:00 UTC summer).
+    # Runs BEFORE the 4pm check-updates so the mirror has refreshed :latest
+    # tags before checks compare against upstream — keeps "update available"
+    # signals accurate for the local registry.
+    - cron: '0 8 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - ".forgejo/workflows/mirror-mappings.txt"
+
+jobs:
+  mirror:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    env:
+      REGISTRY: <REDACTED_HOST>
+      REGISTRY_USER: nicholas
+      REGISTRY_PASS: ${{ secrets.FORGEJO_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to local registry
+        run: |
+          echo "$REGISTRY_PASS" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+          echo "Logged in to $REGISTRY"
+
+      - name: Pull, tag, and push images
+        run: |
+          set -e
+
+          MAPPING_FILE="${GITHUB_WORKSPACE}/.forgejo/workflows/mirror-mappings.txt"
+          TOTAL=$(grep -cvE '^\s*$|^\s*#' "$MAPPING_FILE")
+          DONE=0
+          FAILED=0
+
+          echo "=== Mirror workflow starting ==="
+          echo "Mappings file: $MAPPING_FILE"
+          echo "Images to mirror: $TOTAL"
+          echo ""
+
+          while IFS= read -r line; do
+            # Skip empty and comment lines
+            case "$line" in
+              ''|\#*) continue ;;
+            esac
+
+            # Parse tab-separated source|target
+            source=$(echo "$line" | cut -f1)
+            target=$(echo "$line" | cut -f2)
+
+            DONE=$((DONE + 1))
+            echo "────────────────────────────────────────────────────────────────"
+            echo "[$DONE/$TOTAL] $source → $target"
+
+            # Pull source
+            echo "  Pulling..."
+            if docker pull "$source" >/dev/null 2>&1; then
+              echo "  ✓ Pulled"
+
+              # Tag for local registry
+              echo "  Tagging: $target"
+              docker tag "$source" "$target"
+
+              # Push to local registry
+              echo "  Pushing..."
+              if docker push "$target" >/dev/null 2>&1; then
+                echo "  ✓ Pushed to $REGISTRY"
+              else
+                echo "  ✗ Push FAILED for $target"
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "  ✗ Pull FAILED for $source"
+              FAILED=$((FAILED + 1))
+            fi
+          done < "$MAPPING_FILE"
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Processed: $DONE | Failed: $FAILED"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "WARNING: $FAILED images failed to mirror."
+            exit 1
+          fi
+          echo "All images mirrored successfully."

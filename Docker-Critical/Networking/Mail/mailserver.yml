@@ -1,0 +1,143 @@
+# Local, SHTF-proof mail stack: docker-mailserver + Roundcube webmail.
+#
+# PURPOSE
+#   Self-contained LAN mail server for authentik password-reset / invite /
+#   verification emails. It delivers mail to REAL IMAP inboxes users open in
+#   any mail client or in the Roundcube webmail UI. It uses NO internet relay
+#   and NO external DNS/MX/SPF — so it keeps working when the WAN is down.
+#
+#   This is SEPARATE from Postfix.yml (the peacetime internet relay to Mailtrap).
+#   Postfix dies at SHTF; this stack doesn't.
+#
+# DEPLOYED ON: <REDACTED_HOST> <REDACTED_HOST> — same host as authentik, so password
+#   resets keep working even with the WAN cut (single-host resilience).
+#
+# NETWORKING
+#   - authnet (external): shared with authentik. authentik reaches the MTA at
+#     hostname "mailserver" on port 25 (no auth, mail from localhost/Docker net).
+#   - authnet: Roundcube is published at mail.<DOMAIN> via Traefik (which is
+#     attached to authnet on <REDACTED_HOST>) for peacetime remote access;
+#     LAN still works without it on the raw 8082 port.
+#
+# SECRETS
+#   - MAILSERVER_ADMIN_PASSWORD: app password for the "admin" IMAP/SMTP login
+#     (written from Forgejo repo secret at deploy time -> ./secrets/).
+#   - ROUNDCUBE_DES_KEY: 24-char DES key for Roundcube session/cookie crypto.
+#   - ROUNDCUBE_DB_*: MariaDB creds for the Roundcube address-book/db.
+#   All under ./secrets (gitignored, never committed). No .env files.
+
+services:
+  mailserver:
+    image: <REDACTED_HOST>/nicholas/mailserver/docker-mailserver:14.0.0
+    container_name: mailserver
+    hostname: mail.${DOMAIN_NAME}
+    restart: unless-stopped
+    networks:
+      - authnet
+    environment:
+      - HOSTNAME=mail.${DOMAIN_NAME}
+      - DOMAINNAME=${DOMAIN_NAME}
+      - ENABLE_SPAMD=0
+      - ENABLE_CLAMAV=0
+      - ENABLE_FAIL2BAN=0
+      - ONE_DIR=1
+      - POSTMASTER_ADDRESS=admin@${DOMAIN_NAME}
+      # Permit mail from any network the mailserver is connected to (authnet)
+      # without SASL auth — that's authentik's submission path.
+      - PERMIT_DOCKER=connected-networks
+      - ENABLE_MANAGESIEVE=1
+      - SMTP_ONLY=0
+      - TLS_LEVEL=modern
+      # No public DNS for this host, so generate a self-signed cert (clients
+      # trust it explicitly / it's LAN-only). No ACME/letsencrypt.
+      - SSL_TYPE=self-signed
+      # Certs generated on host at /srv/mailserver/ssl (CN=<REDACTED_HOST>).
+      # docker-mailserver's SSL_CERT_PATH/SSL_KEY_PATH overrides let us point
+      # at them directly — the /tmp/docker-mailserver/ssl path is shadowed by
+      # the config volume mount, and v14 doesn't auto-generate self-signed.
+      - SSL_CERT_PATH=/etc/ssl/mail/<REDACTED_HOST>-cert.pem
+      - SSL_KEY_PATH=/etc/ssl/mail/<REDACTED_HOST>-key.pem
+    ports:
+      # IMAP / IMAPS / SMTP submission (for mail clients over LAN).
+      - "143:143"
+      - "993:993"
+      - "587:587"
+      - "465:465"
+    volumes:
+      - /docker-data/dms/mail:/var/mail
+      - /docker-data/dms/state:/var/mail-state
+      - /docker-data/dms/config:/tmp/docker-mailserver
+      - /docker-data/dms/logs:/var/log/mail
+      - /srv/mailserver/ssl:/etc/ssl/mail:ro
+  roundcube-db:
+    image: <REDACTED_HOST>/nicholas/mariadb:11.4
+    container_name: roundcube-db
+    restart: unless-stopped
+    networks:
+      - authnet
+    environment:
+      - MARIADB_DATABASE=roundcube
+      - MARIADB_USER=roundcube
+      - MARIADB_PASSWORD_FILE=/run/secrets/roundcube_db_password
+      - MARIADB_ROOT_PASSWORD_FILE=/run/secrets/roundcube_db_root_password
+    volumes:
+      - /docker-data/roundcube/db:/var/lib/mysql
+    secrets:
+      - roundcube_db_password
+      - roundcube_db_root_password
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  roundcube:
+    image: <REDACTED_HOST>/nicholas/roundcube/roundcubemail:1.6.9-apache
+    container_name: roundcube
+    restart: unless-stopped
+    depends_on:
+      roundcube-db:
+        condition: service_healthy
+    networks:
+      - authnet
+      # Traefik on <REDACTED_HOST> is attached to authnet (see Proxy/proxy.yml),
+      # so publish Roundcube there rather than a non-existent traefik_proxy net.
+    environment:
+      - ROUNDCUBE_DB_TYPE=mysql
+      - ROUNDCUBE_DB_HOST=roundcube-db
+      - ROUNDCUBE_DB_NAME=roundcube
+      - ROUNDCUBE_DB_USER=roundcube
+      - ROUNDCUBE_DB_PASSWORD__FILE=/run/secrets/roundcube_db_password
+      - ROUNDCUBE_DES_KEY_FILE=/run/secrets/roundcube_des_key
+      # IMAP/SMTP both point at the local mailserver on the authnet network.
+      - ROUNDCUBE_DEFAULT_HOST=ssl://mailserver
+      - ROUNDCUBE_DEFAULT_PORT=993
+      - ROUNDCUBE_SMTP_SERVER=tls://mailserver
+      - ROUNDCUBE_SMTP_PORT=587
+      - ROUNDCUBE_SMTP_USER=%u
+      - ROUNDCUBE_SMTP_PASS=%p
+      - ROUNDCUBE_PLUGINS=archive,zipdownload,managesieve
+    secrets:
+      - roundcube_db_password
+      - roundcube_des_key
+    labels:
+      # Raw LAN access (no cert needed at SHTF).
+      - "traefik.enable=true"
+      - "traefik.docker.network=authnet"
+      - "traefik.http.routers.roundcube.rule=Host(`mail.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.roundcube.entrypoints=websecure"
+      - "traefik.http.routers.roundcube.tls=true"
+      - "traefik.http.routers.roundcube.tls.certresolver=${CERTRESOLVER:-cloudflare}"
+      - "traefik.http.services.roundcube.loadbalancer.server.port=80"
+
+secrets:
+  roundcube_db_password:
+    file: ./secrets/roundcube_db_password
+  roundcube_db_root_password:
+    file: ./secrets/roundcube_db_root_password
+  roundcube_des_key:
+    file: ./secrets/roundcube_des_key
+
+networks:
+  authnet:
+    external: true

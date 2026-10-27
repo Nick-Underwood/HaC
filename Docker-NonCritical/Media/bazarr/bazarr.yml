@@ -1,0 +1,36 @@
+services:
+  bazarr:
+    image: <REDACTED_HOST>/nicholas/linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+    networks:
+      - mediaproxy
+    environment:
+      - PUID=${PUID:-568}
+      - PGID=${PGID:-568}
+      - TZ=${TZ:-America/Chicago}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.bazarr.entrypoints=websecure
+      - traefik.http.routers.bazarr.rule=Host(`bazarr.${DOMAIN_NAME}`)
+      - traefik.http.routers.bazarr.service=bazarr
+      - traefik.http.services.bazarr.loadbalancer.server.port=6767
+      - traefik.http.routers.bazarr.tls.certresolver=${CERTRESOLVER:-cloudflare}
+      - traefik.http.routers.bazarr.tls.domains[0].main=bazarr.${DOMAIN_NAME}
+    volumes:
+      - /srv/bazarr/config:/config
+      - /mnt/data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6767/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 200
+networks:
+  mediaproxy:
+    external: true

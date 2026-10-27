@@ -1,0 +1,111 @@
+name: Mirror to GitHub
+
+# Publishes a SANITISED snapshot of the HaC repo to the public GitHub mirror
+# (Nick-Underwood/HaC).
+#
+# Hardening (t_a180fa2a):
+#   * The mirror used to strip files by NAME only, so any literal secret inside
+#     a kept file was published verbatim. That is exactly how the stale Wazuh
+#     cluster key (aa093264...) reached the public tree, and how a live MCP
+#     Gateway DB password was sitting in the tree waiting to be published.
+#   * The mirror is now a two-stage gate — redact internal topology, then scan
+#     file CONTENT. Either stage failing aborts the job BEFORE `git commit`,
+#     so a secret can never reach the public repo.
+#
+# Redaction policy and secret patterns live in the two scripts below, so the
+# rules are auditable in one place and tunable without touching this workflow.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Build sanitized mirror tree
+        run: |
+          set -eu
+          rm -rf /tmp/hac-github-mirror
+          mkdir -p /tmp/hac-github-mirror
+          cp -a . /tmp/hac-github-mirror/
+          cd /tmp/hac-github-mirror
+
+          # Remove private/editor metadata from the public mirror.
+          rm -rf .git
+          rm -rf .vscode
+          rm -f .github/copilot-instructions.md
+          rm -rf .github/agents .github/prompts .github/instructions
+          # 11 AI/Copilot operational-artifact files that bypass name-based removal
+          rm -f COPILOT_README.md
+          rm -f .github/knowledge/sme-learning.md
+          rm -rf .github/skills
+          # Non-secret operational metadata (URL stubs, image mappings, vault access)
+          rm -f .vault-access.json.example
+          rm -f .forgejo/workflows/mirror-mappings.txt
+          rm -rf docs/reference
+          # Internal script artifacts (container names + secret var names)
+          rm -f scripts/extract-from-hosts.sh
+          rm -f scripts/restore-forgejo-secrets.sh
+          rm -f scripts/required-secrets.txt
+          rm -f scripts/required-vars.txt
+          rm -f scripts/bootstrap-copilot-agent.ps1
+          rm -f Docker-NonCritical/Security/manager-config/shared/agent.conf
+          rm -f Docker-NonCritical/Security/scripts/restore-agent-keys.py
+          find . -type f \( -name '*.instructions.md' -o -name '*.agent.md' -o -name '*.prompt.md' -o -name 'AGENTS.md' -o -name 'SKILL.md' -o -name 'copilot-instructions.md' -o -name '*.code-workspace' \) -delete
+
+      - name: Redact internal hostnames / private addresses
+        run: |
+          set -eu
+          cd /tmp/hac-github-mirror
+          # Rewrites *.<REDACTED_HOST>/.local, internal machine names and RFC1918 /
+          # CGNAT / link-local addresses to stable placeholders in the mirror
+          # tree only. The local repo keeps the real values it deploys with.
+          scripts/redact-for-mirror.sh .
+          echo "--- remaining internal references (must be empty) ---"
+          grep -rInE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[xX]|[[:space:]]\.5[0-9]|[A-Za-z0-9._-]+\.u-acres\.(com|local)|[A-Za-z0-9._-]+\.local' . \
+            --exclude-dir=.git || echo "(none)"
+
+      - name: Scan file content for secrets (blocks the commit)
+        run: |
+          set -eu
+          cd /tmp/hac-github-mirror
+          # Regex + Shannon-entropy sweep over every file. Exits non-zero on a
+          # hit, which fails this job before anything is committed or pushed.
+          scripts/scan-for-secrets.sh .
+
+          # Belt and braces: if a real gitleaks binary happens to be on PATH,
+          # run it too. The bundled scanner above does NOT depend on it.
+          if command -v gitleaks >/dev/null 2>&1; then
+            echo "gitleaks present - running"
+            gitleaks detect --source . --no-banner --redact --log-level error
+          fi
+
+      - name: Push sanitized tree to GitHub
+        run: |
+          set -eu
+          cd /tmp/hac-github-mirror
+          git init
+          git config user.name "forgejo-mirror-bot"
+          git config user.email "<REDACTED_EMAIL>"
+          git add -A
+          git commit -m "Mirror sanitized snapshot from Forgejo"
+          git branch -M main
+          git remote add github "https://x-access-token:${{ secrets.TOKEN_GITHUB }}@github.com/Nick-Underwood/HaC.git"
+          git push github main --force
+
+      - name: Report mirror result
+        if: always()
+        run: |
+          echo "Mirror tree pushed. Sanitised files: $(cd /tmp/hac-github-mirror 2>/dev/null && find . -type f | wc -l)"
+          echo "Redaction placeholders applied:"
+          cd /tmp/hac-github-mirror 2>/dev/null && grep -rhoE '<REDACTED_(HOST|IP|EMAIL)>' . | sort | uniq -c || true

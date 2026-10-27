@@ -1,0 +1,42 @@
+services:
+  mnemosyne-sync:
+    image: python:3.12-slim
+    container_name: mnemosyne-sync
+    restart: unless-stopped
+    expose:
+      - "8765"
+    volumes:
+      - mnemosyne-data:/data
+    environment:
+      - MNEMOSYNE_DATA_DIR=/data
+      - MNEMOSYNE_SYNC_API_KEY=${MNEMOSYNE_SYNC_API_KEY}
+    command: sh -ec "umask 077 && pip install --quiet 'mnemosyne-memory[embeddings,sync]' && exec mnemosyne sync-serve --host 0.0.0.0 --port 8765 --db-path /data/relay.db --initialize-surface --behind-tls-proxy --api-key ${MNEMOSYNE_SYNC_API_KEY}"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - aiproxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=aiproxy
+      - traefik.http.services.mnemosyne-sync.loadbalancer.server.port=8765
+      - traefik.http.routers.mnemosyne-sync.entrypoints=websecure
+      - traefik.http.routers.mnemosyne-sync.rule=Host(`memory.${DOMAIN_NAME}`)
+      - traefik.http.routers.mnemosyne-sync.service=mnemosyne-sync
+      - traefik.http.routers.mnemosyne-sync.middlewares=lan-only
+      - traefik.http.routers.mnemosyne-sync.tls.certresolver=${CERTRESOLVER}
+      - traefik.http.routers.mnemosyne-sync.tls.domains[0].main=memory.${DOMAIN_NAME}
+      - "ha.monitor=true"
+      - "ha.category=tools"
+      - "ha.compose-file=Docker-NonCritical/Automation/AI/MnemosyneSync/mnemosyne-sync.yml"
+      - "ha.service-name=mnemosyne-sync"
+
+networks:
+  aiproxy:
+    external: true
+
+volumes:
+  mnemosyne-data:

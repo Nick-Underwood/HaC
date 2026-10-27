@@ -1,0 +1,11 @@
+[Unit]
+Description=Wazuh watchdog timer (self-heal + alert forwarding)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=wazuh-watchdog.service
+
+[Install]
+WantedBy=timers.target

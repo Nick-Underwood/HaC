@@ -1,0 +1,11 @@
+/* u-acres copy fix (2026-08-13, marker: u-acres-copy-fix): the Wazuh app
+   applies wz-user-select-none to EuiCodeBlock command code blocks, which breaks
+   the Copy-command button AND manual selection (Ctrl+C) in Chromium/Edge —
+   the copy button selects nothing. Re-enable selection on code blocks only.
+   Re-applied by deploy-wazuh.yml after every dashboard container recreate. */
+.euiCodeBlock__code {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+}

@@ -1,0 +1,62 @@
+name: Deploy Music Assistant
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Docker-Critical/Home/MusicAssistant/**"
+      - ".forgejo/workflows/deploy-musicassistant.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: <REDACTED_HOST>
+    defaults:
+      run:
+        shell: sh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify compose file exists
+        run: ls -l ./Docker-Critical/Home/MusicAssistant/musicassistant.yml
+
+      - name: Authenticate to local registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          echo "$FORGEJO_TOKEN" | docker login <REDACTED_HOST> -u nicholas --password-stdin
+      - name: Compare image and config
+        working-directory: ./Docker-Critical/Home/MusicAssistant
+        env:
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTRESOLVER: ${{ vars.CERTRESOLVER }}
+          TZ: ${{ vars.TZ }}
+          MA_HOSTNAME: ${{ vars.MA_HOSTNAME }}
+        run: |
+          # Check if image or config changed; redeploy if needed
+          defined_alexa_skill=$(grep -m1 'image: ghcr.io/alams154/music-assistant-skill:' musicassistant.yml | awk '{print $2}')
+          running_alexa_skill=$(docker inspect -f '{{.Config.Image}}' music-assistant-skill 2>/dev/null || echo "none")
+          checksum=$(sha256sum musicassistant.yml | awk '{print $1}')
+          old=$(cat .musicassistant_checksum 2>/dev/null || echo "")
+
+          echo "Defined music-assistant-skill: $defined_alexa_skill"
+          echo "Running music-assistant-skill: $running_alexa_skill"
+          echo "Checksum: $checksum vs $old"
+
+          if [ "$defined_alexa_skill" != "$running_alexa_skill" ] || \
+             [ "$checksum" != "$old" ]; then
+            echo "Redeploying Music Assistant Alexa skill bridge..."
+            # Stop and remove container if it exists
+            docker stop music-assistant-skill 2>/dev/null || true
+            docker rm music-assistant-skill 2>/dev/null || true
+            # Clean up with docker compose
+            docker compose -p music-assistant -f musicassistant.yml down --remove-orphans || true
+            DOMAIN_NAME="$DOMAIN_NAME" CERTRESOLVER="$CERTRESOLVER" TZ="$TZ" MA_HOSTNAME="$MA_HOSTNAME" docker compose -p music-assistant -f musicassistant.yml up -d --force-recreate
+            echo "$checksum" > .musicassistant_checksum
+            docker logs music-assistant-skill --tail 20
+          else
+            echo "No changes detected, skipping redeploy"
+          fi
